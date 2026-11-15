@@ -347,6 +347,33 @@ def area_quality(box, used_regions):
             "than single months.")
 
 
+def reliability(box, used_regions):
+    """(label, typical error) from the leave-one-year-out monthly error.
+
+    A whole preset region uses the region's own tested error (the numbers shown are region totals). A custom
+    box uses the median over the tested 5 deg tiles that overlap it. good < 15%, fair 15-30%, low > 30% or untested.
+    """
+    grade = lambda e: "good" if e < 15 else "fair" if e <= QUALITY_MAX_ERROR else "low"
+    if len(used_regions) == 1 and box == REGIONS.get(used_regions[0]):
+        e = float(val["regions"][used_regions[0]]["loyo"]["region"][val["chosen_model"]]["mdape_pct"])
+        return grade(e), e
+    vals = []
+    for r in used_regions:
+        for t in val["regions"].get(r, {}).get("loyo", {}).get("tiles", []):
+            if (t["tile_lat"] < box[1] and t["tile_lat"] + TILE > box[0]
+                    and t["tile_lon"] < box[3] and t["tile_lon"] + TILE > box[2] and val["chosen_model"] in t):
+                vals.append(t[val["chosen_model"]]["mdape_pct"])
+    if not vals:
+        return "low", None
+    e = float(np.median(vals))
+    return grade(e), e
+
+
+def reliability_line(box, used_regions):
+    label, e = reliability(box, used_regions)
+    return f"Reliability: {label} " + (f"(typical monthly error {e:.0f}%)" if e is not None else "(not tested here)")
+
+
 def fire_profile_html(area, facts, s, mtd, shift, type_note, quality, h):
     """Self-contained one-page HTML summary in plain language (template text, computed numbers only)."""
     full = s[~s["is_partial"]]
@@ -367,7 +394,7 @@ def fire_profile_html(area, facts, s, mtd, shift, type_note, quality, h):
                          f"(middle value of {L['hist']})."))
             rows.append(("Last full season" if L["is_latest"] else "Selected season", f"{L['label']}: <b>{L['value']:,.0f} fire detections, "
                          f"{vs_normal(L['value'], L['normal'])}</b>. It was the {ordinal(L['rank']) + ' ' if L['rank'] > 1 else ''}busiest of "
-                         f"{L['n']} seasons." + (" Includes preliminary recent data." if L["caveat"] else "")))
+                         f"{L['n']} seasons." + (f" {PRELIM_TAG}." if L["caveat"] else "")))
     if shift:
         rows.append(("Has the season moved?", f"{shift['p1']}: {shift['w1']}. {shift['p2']}: {shift['w2']}. "
                      f"<b>{shift['verdict']}</b>"))
@@ -758,6 +785,8 @@ h = headline_numbers(s_all)
 base_facts = season_facts(s_all)
 facts = base_facts
 day = pd.Timestamp(cal["last_data_day"])
+PRELIM_YEAR = int(cal["fit_end"][:4]) + 1      # first year outside the factor fit; details in tab 2
+PRELIM_TAG = f"{PRELIM_YEAR}: preliminary"
 # The tabs report which one is open, so the sidebar shows only the control that tab uses.
 # A hidden control keeps its last value in session state.
 tab1, tab2 = st.tabs(["Fire season check", "Method & validation"], key="tab", on_change="rerun")
@@ -794,6 +823,7 @@ with tab1:
                     f"**{vs_normal(L['value'], L['normal'])}**.")
         ans += small_fire_note(box, facts["peak"])
         st.markdown(ans)
+        st.markdown(f"**{reliability_line(box, used_regions)}**")
 
         # ---- season briefing
         with st.container(border=True):
@@ -808,8 +838,7 @@ with tab1:
                     f"{L['value']:,.0f} fire detections**, "
                     f"{vs_normal(L['value'], L['normal'])} ({L['normal']:,.0f} in a normal season, "
                     f"{L['hist']}). It was the {ordinal(L['rank']) + ' ' if L['rank'] > 1 else ''}busiest of {L['n']} seasons."
-                    + (" (includes preliminary recent data; see the 2026 note under Method & validation)"
-                       if L["caveat"] else ""))
+                    + (f" *{PRELIM_TAG}.*" if L["caveat"] else ""))
             md = h["median"]
             if np.isfinite(md["viirs_post_x"]) and np.isfinite(h["inflation"]):
                 lines.append(
@@ -823,7 +852,7 @@ with tab1:
                    "pixel seen burning; a large fire produces many detections.")
         profile = fire_profile_html(area_name[0].upper() + area_name[1:] if prefer else title_area, facts, s_all,
                                     month_to_date(box, prefer), area_shift(s_all),
-                                    small_fire_note(box, facts["peak"]), area_quality(box, used_regions), h)
+                                    small_fire_note(box, facts["peak"]), reliability_line(box, used_regions) + ". " + area_quality(box, used_regions), h)
         st.download_button("Download fire profile (one page)", profile.encode("utf-8"),
                            f"fire_profile_{(choice if prefer else 'custom_box').lower().replace(' ', '_')}.html",
                            "text/html", help="A one-page summary for this area. Open it in a browser; "
@@ -848,7 +877,7 @@ with tab1:
             wide = wide.reindex(columns=range(int(cal["first_month"][:4]) + 1, day.year + 1), fill_value=0.0)
             cells = classify_vs_normal(wide, day.year, f"{rng_days} {day.year}")
             what = (f"Each square (about {SQ_KM} km) compares fire activity in {rng_days} {day.year} with the "
-                    f"same days in earlier years.")
+                    f"same days in earlier years." + (f" *{PRELIM_TAG}.*" if day.year >= PRELIM_YEAR else ""))
         elif map_mode == "Selected season" and facts and facts["last"]:
             t = fine_table(prefer, vbox, "monthly")
             t = t[t["cm"].isin(facts["peak"])].copy()
@@ -865,7 +894,7 @@ with tab1:
             p1, p2 = (f"{a}–{b}" for a, b in SHIFT_PERIODS)
             what = (f"Each square (about {SQ_KM} km) compares when the fire season started and how long it lasted "
                     f"in {p2} against {p1}. A change is shown only if it is at least one month and unlikely to be "
-                    "chance (about 1 square in 20 can still be flagged by chance).")
+                    "chance.")
         return styles, cells, what
 
     q_names = [prefer] if prefer else regions_for_box(box)
@@ -902,12 +931,9 @@ with tab1:
                             f"{c_hi:.0%}.**")
         else:
             summary = "No squares have enough history for this view."
-        st.caption(f"{what} {summary} {n_skip:,} more squares had fire but too little history to judge "
-                   "and are not drawn (a normal level needs fire in at least half of the other years)."
-                   + (f" {n_lowq:,} more are not drawn because the satellite correction did not test well "
-                      f"enough there (monthly error above {QUALITY_MAX_ERROR}% or too little data)."
-                      if n_lowq else "")
-                   + f" Squares that are {mid_word} are left blank so the unusual ones stand out.")
+        st.caption(f"{what} {summary} Not drawn: {n_skip:,} squares with too little history"
+                   + (f" and {n_lowq:,} where reliability is low" if n_lowq else "")
+                   + f". Squares that are {mid_word} are left blank.")
         if raw_mode:
             st.warning("You are looking at the uncorrected map: raw satellite counts, where a sharper "
                        "satellite since 2018 inflates recent years.")
@@ -944,6 +970,8 @@ with tab1:
 
     # ---- current month vs normal
     st.subheader("Right now compared with normal")
+    if day.year >= PRELIM_YEAR:
+        st.caption(f"*{PRELIM_TAG}.*")
     mtd = month_to_date(box, prefer)          # same day range in every year
     cur_mtd, hist = mtd.iloc[-1], mtd.iloc[:-1]
     lastfull = s_all.loc[cal["latest_full_month"]]
@@ -1103,6 +1131,11 @@ with tab2:
 
     # ---- validation
     st.subheader("Validation")
+    st.markdown(f"**{reliability_line(box, used_regions)}.** Good is a typical monthly error under 15%, fair "
+                f"15–{QUALITY_MAX_ERROR}%, low above {QUALITY_MAX_ERROR}% or not tested; for a whole region the typical "
+                f"error is the region's own tested error, for a custom box the median over the tested {TILE:g}° "
+                "tiles that overlap it. "
+                + area_quality(box, used_regions))
     if not used_regions:
         st.info("This box is outside the validated regions; the pooled factor is unvalidated here.")
     for r in used_regions:
@@ -1203,7 +1236,9 @@ A square's normal is the median of its earlier years, and it needs fire in at le
 judged. Classes: beyond 1.5× and 3× normal (or the inverses); differences under 2 detections count as normal.
 Season shift compares {SHIFT_PERIODS[1][0]}–{SHIFT_PERIODS[1][1]} with {SHIFT_PERIODS[0][0]}–{SHIFT_PERIODS[0][1]} per square (at least
 {SHIFT_MIN_TOTAL} detections and {SHIFT_MIN_YEARS} fire years in each period); a change is shown only if it is at least one month
-and occurs in fewer than {SHIFT_ALPHA:.0%} of {SHIFT_PERMS} random reshuffles of that square's years. Squares that qualify are
+and occurs in fewer than {SHIFT_ALPHA:.0%} of {SHIFT_PERMS} random reshuffles of that square's years, so about 1 unchanged
+square in 20 can still be flagged by chance. Squares in tiles where the conversion tested poorly (monthly error above
+{QUALITY_MAX_ERROR}%, or too little data to test) are not drawn. Squares that qualify are
 mostly places that burn every year (largely farmland), so this map says little about rare large wildfires.
 
 **Fire season.** The shortest run of consecutive months that holds at least 75% of the sum of
@@ -1213,6 +1248,7 @@ calendar-month medians of the harmonized series.
 - Hotspots are pixels, not fire events. One large fire produces many pixels, so a few extreme months dominate totals.
 - The factor assumes a stable relationship between the sensors. It was validated at region and month scale; small boxes have larger errors.
 - The series is "Terra + Aqua equivalent" as observed in 2018–2025. Cloud cover, overpass times, satellite orbit drift and the larger night-time share of VIIRS detections are absorbed into the factor, not modelled.
+- Numbers tagged "{PRELIM_TAG}" in the first tab include months outside the factor fit and near-real-time data; see the 2026 note above.
 - In 2026 MODIS reports fewer hotspots relative to VIIRS than before (cause unverified), so 2026 is excluded from the factor fit.
 - Near-real-time data (from {cal['nrt_start']}) have no fire-type classification. Known static heat sources are masked at 0.01°, which removes most but not all non-vegetation detections.
 - Regions mixing forest and cropland burning may need finer tiles; tile errors are listed above and tiles that tested poorly are left blank on the map.
