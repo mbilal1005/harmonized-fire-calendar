@@ -9,8 +9,12 @@ import os
 
 import numpy as np
 import pandas as pd
+import folium
 import plotly.graph_objects as go
 import streamlit as st
+from folium.plugins import Draw
+from plotly.colors import sample_colorscale
+from streamlit_folium import st_folium
 
 AGG = "data/agg"
 RAW = "data/raw"
@@ -55,18 +59,9 @@ def regions_for_box(box):
     return [n for n, (ra, rb, rc, rd) in REGIONS.items() if a < rb and b > ra and c < rd and d > rc]
 
 
-def _convert(g, box, prefer):
-    """Per-month MODIS, VIIRS and converted-VIIRS sums of a cell table inside a box.
-
-    Each VIIRS cell-month is converted with the factor of its 5 deg tile from the
-    preset region that contains the cell; cells outside every preset region use
-    the pooled factor over all regions.
-    """
-    a, b, c, d = box
-    clat, clon = g["cell_lat"] + GRID / 2, g["cell_lon"] + GRID / 2
-    g = g[clat.between(a, b) & clon.between(c, d)]
-    modis = g[g["sensor"] == "MODIS"].groupby("month")["n"].sum()
-    v = g[g["sensor"] == "VIIRS"].copy()
+def _with_factor(v, prefer):
+    """Add the conversion factor and converted count to VIIRS cell-month rows."""
+    v = v.copy()
     v["clat"], v["clon"] = v["cell_lat"] + GRID / 2, v["cell_lon"] + GRID / 2
     v["tile_lat"] = np.floor(v["cell_lat"].astype(float) / TILE) * TILE
     v["tile_lon"] = np.floor(v["cell_lon"].astype(float) / TILE) * TILE
@@ -83,6 +78,57 @@ def _convert(g, box, prefer):
     fallback = v["factor"].isna()
     fallback_share = float(v.loc[fallback, "n"].sum() / v["n"].sum()) if v["n"].sum() else 0.0
     v["conv"] = v["n"] * v["factor"].fillna(GLOBAL_POOLED)
+    return v, fallback_share
+
+
+@st.cache_data
+def cell_density(prefer, y0, y1):
+    """Harmonized hotspots per 0.5 deg cell, summed over the selected years (all loaded cells)."""
+    g = grid[grid["month"].str[:4].astype(int).between(y0, y1)]
+    m = g[(g["sensor"] == "MODIS") & (g["month"] < cal["overlap_start"])]
+    v, _ = _with_factor(g[g["sensor"] == "VIIRS"], prefer)
+    tot = m.groupby(["cell_lat", "cell_lon"])["n"].sum().add(
+        v.groupby(["cell_lat", "cell_lon"])["conv"].sum(), fill_value=0)
+    return tot.rename("n").reset_index()
+
+
+def density_map(dens, box):
+    """Light basemap with one coloured square per cell and a rectangle-only draw tool."""
+    esri = "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_{}/MapServer/tile/{{z}}/{{y}}/{{x}}"
+    fmap = folium.Map(tiles=None, control_scale=True)
+    folium.TileLayer(esri.format("Base"), attr="Esri, HERE, Garmin, © OpenStreetMap contributors",
+                     name="Light basemap", control=False).add_to(fmap)
+    fmap.fit_bounds([[box[0], box[2]], [box[1], box[3]]])
+    dens = dens[dens["n"] >= 1]
+    if len(dens):
+        top = np.log10(1 + dens["n"].max())
+        cols = sample_colorscale("Inferno", list(np.clip(np.log10(1 + dens["n"]) / top, 0, 1)), colortype="rgb")
+        for (lat, lon, n), c in zip(dens[["cell_lat", "cell_lon", "n"]].itertuples(index=False), cols):
+            folium.Rectangle([[float(lat), float(lon)], [float(lat) + GRID, float(lon) + GRID]], stroke=False,
+                             fill=True, fill_color=c, fill_opacity=0.62,
+                             tooltip=f"{n:,.0f} fire detections").add_to(fmap)
+    folium.TileLayer(esri.format("Reference"), attr="Esri", name="Place names", control=False,
+                     overlay=True).add_to(fmap)
+    folium.Rectangle([[box[0], box[2]], [box[1], box[3]]], color="#2a78d6", weight=2.5, fill=False,
+                     tooltip="Selected area").add_to(fmap)
+    Draw(draw_options=dict(polyline=False, polygon=False, circle=False, marker=False, circlemarker=False,
+                           rectangle=dict(shapeOptions=dict(color="#2a78d6", weight=2))),
+         edit_options=dict(edit=False, remove=False)).add_to(fmap)
+    return fmap
+
+
+def _convert(g, box, prefer):
+    """Per-month MODIS, VIIRS and converted-VIIRS sums of a cell table inside a box.
+
+    Each VIIRS cell-month is converted with the factor of its 5 deg tile from the
+    preset region that contains the cell; cells outside every preset region use
+    the pooled factor over all regions.
+    """
+    a, b, c, d = box
+    clat, clon = g["cell_lat"] + GRID / 2, g["cell_lon"] + GRID / 2
+    g = g[clat.between(a, b) & clon.between(c, d)]
+    modis = g[g["sensor"] == "MODIS"].groupby("month")["n"].sum()
+    v, fallback_share = _with_factor(g[g["sensor"] == "VIIRS"], prefer)
     return modis, v.groupby("month")["n"].sum(), v.groupby("month")["conv"].sum(), fallback_share
 
 
@@ -265,6 +311,13 @@ def calendar_figure(sc, col, yr):
 
 
 # --------------------------------------------------------------- sidebar
+# A rectangle drawn on the map becomes the custom box (applied before the widgets are built).
+for _k, _v in (("lat0", 37.5), ("lat1", 39.0), ("lon0", 22.5), ("lon1", 24.5)):
+    st.session_state.setdefault(_k, _v)
+if "pending_box" in st.session_state:
+    _b = st.session_state.pop("pending_box")
+    st.session_state.update(region_choice="Custom box", lat0=_b[0], lat1=_b[1], lon0=_b[2], lon1=_b[3])
+
 st.sidebar.header("Area")
 presets = list(REGIONS)
 default = presets.index("Greece") if "Greece" in presets else 0
@@ -272,10 +325,10 @@ choice = st.sidebar.selectbox("Region", presets + ["Custom box"], index=default,
 if choice == "Custom box":
     with st.sidebar.expander("Box coordinates", expanded=True):
         c1, c2 = st.columns(2)
-        lat0 = c1.number_input("Lat min", -90.0, 90.0, 37.5, 0.5, key="lat0")
-        lat1 = c2.number_input("Lat max", -90.0, 90.0, 39.0, 0.5, key="lat1")
-        lon0 = c1.number_input("Lon min", -180.0, 180.0, 22.5, 0.5, key="lon0")
-        lon1 = c2.number_input("Lon max", -180.0, 180.0, 24.5, 0.5, key="lon1")
+        lat0 = c1.number_input("Lat min", min_value=-90.0, max_value=90.0, step=0.5, key="lat0")
+        lat1 = c2.number_input("Lat max", min_value=-90.0, max_value=90.0, step=0.5, key="lat1")
+        lon0 = c1.number_input("Lon min", min_value=-180.0, max_value=180.0, step=0.5, key="lon0")
+        lon1 = c2.number_input("Lon max", min_value=-180.0, max_value=180.0, step=0.5, key="lon1")
         st.caption(f"The map is divided into {GRID}° squares. A square counts if its centre is inside the box.")
     if lat1 <= lat0 or lon1 <= lon0:
         st.sidebar.error("Max must be larger than min.")
@@ -345,6 +398,25 @@ with tab1:
             st.markdown("\n".join(lines))
         st.caption("Normal = the middle value across all earlier years. A fire detection is one satellite "
                    "pixel seen burning; a large fire produces many detections.")
+
+    # ---- map
+    st.subheader("Where it burns")
+    st.caption(f"Fire activity per map square, {yr[0]}–{yr[1]}; brighter means more. **To check a smaller "
+               "area, use the square tool on the left of the map and draw a rectangle.** Everything on this "
+               "page then updates to that area. You can also type coordinates in the sidebar.")
+    out_map = st_folium(density_map(cell_density(prefer, yr[0], yr[1]), box), height=430,
+                        use_container_width=True, returned_objects=["last_active_drawing"],
+                        key=f"map_{choice}")
+    drawn = (out_map or {}).get("last_active_drawing")
+    if drawn and drawn.get("geometry", {}).get("type") == "Polygon":
+        pts = drawn["geometry"]["coordinates"][0]
+        lats, lons = [p[1] for p in pts], [p[0] for p in pts]
+        new_box = (round(max(min(lats), -90.0), 2), round(min(max(lats), 90.0), 2),
+                   round(max(min(lons), -180.0), 2), round(min(max(lons), 180.0), 2))
+        if new_box[1] > new_box[0] and new_box[3] > new_box[2] and st.session_state.get("last_draw") != new_box:
+            st.session_state["last_draw"] = new_box
+            st.session_state["pending_box"] = new_box
+            st.rerun()
 
     # ---- calendar
     st.subheader("Fire activity calendar")
