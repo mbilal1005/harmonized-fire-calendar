@@ -262,6 +262,43 @@ def season_facts(s):
     return f
 
 
+@st.cache_data
+def month_character(box):
+    """Per calendar month: mean fire power per detection and night share (MODIS, whole record)."""
+    a, b, c, d = box
+    clat, clon = grid["cell_lat"] + GRID / 2, grid["cell_lon"] + GRID / 2
+    g = grid[clat.between(a, b) & clon.between(c, d) & (grid["sensor"] == "MODIS")]
+    t = g.groupby(g["month"].str[5:].astype(int))[["n", "n_night", "frp_sum"]].sum()
+    return pd.DataFrame({"frp_mean": t["frp_sum"] / t["n"], "night": t["n_night"] / t["n"], "n": t["n"]})
+
+
+def join_months(ms):
+    names = [MONTHS_LONG[m - 1] for m in ms]
+    if len(ms) > 1 and all((b - a) % 12 == 1 for a, b in zip(ms, ms[1:])):
+        return f"{names[0]}–{names[-1]}" if len(ms) > 2 else f"{names[0]} and {names[1]}"
+    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
+
+
+def small_fire_note(box, peak):
+    """Sentence about peak-window months dominated by small daytime fires, if the data shows it.
+
+    Small-fire month: mean fire power per detection below a third of the most intense peak month
+    and under 10% of detections at night. Largest-wildfire months: at least two thirds of it.
+    """
+    mc = month_character(box).reindex(peak).dropna()
+    mc = mc[mc["n"] >= 100]
+    if len(mc) < 2:
+        return ""
+    top = mc["frp_mean"].max()
+    small = [m for m in peak if m in mc.index and mc.loc[m, "frp_mean"] < top / 3 and mc.loc[m, "night"] < 0.10]
+    big = [m for m in peak if m in mc.index and mc.loc[m, "frp_mean"] >= 2 * top / 3]
+    if not small or not big:
+        return ""
+    verb = "has" if len(small) == 1 else "have"
+    return (f" {join_months(small)} {verb} many small fires (likely agricultural burning); the largest "
+            f"wildfires happen in {join_months(big)}.")
+
+
 def vs_normal(v, normal):
     """Plain-language comparison, e.g. '43% quieter than normal'."""
     if normal <= 0:
@@ -373,6 +410,7 @@ with tab1:
             L = facts["last"]
             ans += (f" The last full season ({L['label']}) was "
                     f"**{vs_normal(L['value'], L['normal'])}**.")
+        ans += small_fire_note(box, facts["peak"])
         st.markdown(ans)
 
         # ---- season briefing
@@ -686,6 +724,11 @@ The harmonized series is MODIS before {cal['overlap_start']} and converted VIIRS
 
 **Anomalies.** A month is outlined when log(1 + count) exceeds the median + 2 × scaled MAD of the same
 calendar month across all years, and it has at least {MIN_ANOMALY_COUNT} hotspots.
+
+**Small-fire months.** Within the fire season, a month is described as "many small fires" when its mean
+fire radiative power per MODIS detection is below a third of the most intense season month and under 10%
+of its detections are at night. "Likely agricultural burning" is an inference from low intensity, daytime
+timing and wide spread; land cover was not checked.
 
 **Fire season.** The shortest run of consecutive months that holds at least 75% of the sum of
 calendar-month medians of the harmonized series.
