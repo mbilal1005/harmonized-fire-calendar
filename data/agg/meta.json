@@ -6,7 +6,8 @@
     "latest_full_month": "2026-10",
     "overlap_start": "2018-04",
     "nrt_start": "2026-08",
-    "fit_end": "2026-07"
+    "archive_end": "2026-07",
+    "fit_end": "2025-12"
   },
   "regions": {
     "California": [

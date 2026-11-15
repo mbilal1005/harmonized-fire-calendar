@@ -26,6 +26,8 @@ MIN_CALMONTH_MODIS = 50    # min MODIS hotspots for a tile x calendar-month fact
 MIN_TILE_MODIS = 200       # min MODIS hotspots in overlap for a tile's own factor
 MIN_MAPE_COUNT = 10        # months with fewer actual MODIS hotspots are skipped in MdAPE
 MASK_DEG = 0.01            # NRT static-source mask resolution
+FIT_END_CAP = "2025-12"    # factors are fitted up to here; later archive months are the
+                           # "MODIS drift check" (MODIS detects fewer hotspots in 2026)
 
 with open("regions.json") as fh:
     REGIONS = {k: tuple(v) for k, v in json.load(fh).items()}
@@ -128,10 +130,12 @@ def data_calendar(hs):
     nrt = hs.loc[hs["is_nrt"], "month"]
     nrt_start = nrt.min() if len(nrt) else None
     # factors are fitted / validated on archive-quality months only
-    fit_end = str(pd.Period(nrt_start, "M") - 1) if nrt_start else str(full)
+    archive_end = str(pd.Period(nrt_start, "M") - 1) if nrt_start else str(full)
+    fit_end = min(archive_end, FIT_END_CAP) if FIT_END_CAP else archive_end
     return dict(first_month=hs["month"].min(), last_month=str(last_month),
                 last_data_day=str(last_day.date()), latest_full_month=str(full),
-                overlap_start=OVERLAP_START, nrt_start=nrt_start, fit_end=fit_end)
+                overlap_start=OVERLAP_START, nrt_start=nrt_start, archive_end=archive_end,
+                fit_end=fit_end)
 
 
 # ------------------------------------------------------------- aggregation
@@ -377,7 +381,7 @@ def step_model(grid, meta):
               for m in MODELS}
     chosen = min(score, key=score.get)
 
-    fac_parts, ser_parts, heads, params = [], [], [], {}
+    fac_parts, ser_parts, heads, params, drift = [], [], [], {}, {}
     for r, tab in tabs.items():
         fit = tab[(tab["month"] >= cal["overlap_start"]) & (tab["month"] <= cal["fit_end"])]
         P = fit_models(fit)
@@ -415,6 +419,15 @@ def step_model(grid, meta):
         s.insert(0, "region", r)
         ser_parts.append(s)
         heads.append(headline(s, r, cal, chosen))
+        dm = s[(s["month"] > cal["fit_end"]) & (s["month"] <= cal["archive_end"])]
+        if len(dm) and dm["harmonized"].sum() > 0:
+            drift[r] = dict(
+                period=f"{dm['month'].min()}..{dm['month'].max()}",
+                modis_actual=int(dm["modis"].sum()), viirs=int(dm["viirs"].sum()),
+                harmonized_predicted=round(float(dm["harmonized"].sum())),
+                modis_below_prediction_pct=round(float(100 * (1 - dm["modis"].sum() / dm["harmonized"].sum())), 1),
+                viirs_per_modis=round(float(dm["viirs"].sum() / max(dm["modis"].sum(), 1)), 2),
+                viirs_per_modis_fit_period=round(1 / P["region_pooled"], 2))
 
     factors = pd.concat(fac_parts, ignore_index=True)
     for c in factors.columns:
@@ -426,18 +439,22 @@ def step_model(grid, meta):
 
     write_json("validation.json", dict(
         fit_period=f"{cal['overlap_start']}..{cal['fit_end']}",
-        note="NRT months are excluded from fitting and validation. MdAPE uses months with "
+        note="NRT months and months after FIT_END_CAP are excluded from fitting and validation. MdAPE uses months with "
              f">= {MIN_MAPE_COUNT} actual MODIS hotspots; WAPE uses all months.",
         thresholds=dict(min_calmonth_modis=MIN_CALMONTH_MODIS, min_tile_modis=MIN_TILE_MODIS,
                         tile_deg=TILE),
         models=MODELS, chosen_model=chosen,
         selection_rule="lowest leave-one-year-out MdAPE on region-month counts, mean over regions",
         selection_scores_loyo_mdape=score, forward_mdape=fscore,
+        modis_drift_check=dict(
+            note="Archive months after the fit period, not used for fitting. Positive = actual MODIS "
+                 "is below the harmonized (MODIS-equivalent) prediction. Cause unverified.",
+            regions=drift),
         regions=val, fitted=params))
     write_json("headline.json", dict(model=chosen, regions=heads))
 
     # ------------------------------------------------------------ report
-    print(f"\nFit period {cal['overlap_start']}..{cal['fit_end']} (NRT months excluded)")
+    print(f"\nFit period {cal['overlap_start']}..{cal['fit_end']} (2026 and NRT months excluded)")
     rows = []
     for r in val:
         for test in ("loyo", "forward"):
@@ -468,6 +485,9 @@ def step_model(grid, meta):
     print("\n=== Fitted (full fit period) ===")
     for r, p in params.items():
         print(f"{r}: pooled {p['region_viirs_per_modis']} VIIRS per MODIS; power law {p['region_power_law']}")
+    print("\n=== MODIS drift check (archive months after fit period) ===")
+    for r, d in drift.items():
+        print(r, json.dumps(d))
     print("\n=== Headline ===")
     for h in heads:
         print(json.dumps({k: v for k, v in h.items() if k != "sentence"}))
