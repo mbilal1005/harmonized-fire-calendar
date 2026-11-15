@@ -1,4 +1,6 @@
-# Harmonized Fire Calendar
+# FireSeason
+
+**When is fire season in your area, is this year normal, and is it changing?**
 
 **More fires, or just a better satellite?** Splice the VIIRS fire record onto the MODIS record without
 conversion and Greece appears to burn almost three times as much after 2018. MODIS itself shows a decrease.
@@ -10,11 +12,11 @@ NASA Space Apps 2026, challenge "Harmonization of MODIS and VIIRS Hot Spots".
 A web app that turns MODIS and VIIRS active-fire hotspots into one consistent monthly burning-activity
 calendar for a chosen area.
 
-- Pick Greece, California, Europe, USA or a custom latitude/longitude box, and a range of years.
+- Pick Greece, California, Europe, USA or a custom latitude/longitude box, and a season year to check.
 - Compare three series: the naive splice (MODIS, then raw VIIRS), the harmonized series, and actual MODIS.
-- Get a plain-language "Fire season check" for fire planners: peak months, last season against normal,
+- Get a plain-language "Fire season check" for fire planners: peak months, any season against normal,
   and the current month against normal.
-- See "Where it's unusual" on a 0.25° map: this month so far, the last full season, or the shift in
+- See "Where it's unusual" on a 0.25° map: this month so far, the selected season, or the shift in
   season timing, each against the square's own normal, with a toggle to show the uncorrected version.
 - Draw a rectangle on the map to check a smaller area.
 - Download a one-page "Fire profile" for the selected area (HTML, printable to PDF).

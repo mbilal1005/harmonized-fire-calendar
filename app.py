@@ -1,4 +1,4 @@
-"""Harmonized Fire Calendar - Streamlit app.
+"""FireSeason - Streamlit app.
 
 Reads only the small aggregates in ./data/agg (built by pipeline.py).
 Run:  streamlit run app.py
@@ -28,7 +28,7 @@ EVENTS = {
 }
 MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
-st.set_page_config(page_title="Harmonized Fire Calendar", page_icon="🔥", layout="wide")
+st.set_page_config(page_title="FireSeason", page_icon="🔥", layout="wide")
 
 
 # ------------------------------------------------------------------ data
@@ -147,7 +147,7 @@ SHIFT_STYLE = {
     -2: ("#1c5cab", "Season got shorter"),
 }
 NODATA_LABEL = "Not enough data"
-SQ_KM = round(FINE * 111 / 5) * 5      # rough square size in km for captions
+SQ_KM = round(FINE * 111)              # rough square size in km for captions
 SHIFT_PERIODS = ((2001, 2012), (2013, 2025))
 SHIFT_MIN_TOTAL, SHIFT_MIN_YEARS = 20, 4
 
@@ -179,12 +179,12 @@ def fine_table(prefer, vbox, which):
 
 
 def classify_vs_normal(wide, cur, what):
-    """Compare each square's current value with its own normal (median of earlier years).
+    """Compare each square's value in one year with its own normal (median of all other years).
 
-    Enough history = fire in at least half of the earlier years. Classes on a log scale:
+    Enough history = fire in at least half of the other years. Classes on a log scale:
     beyond 1.5x and 3x (or their inverses); differences under 2 detections count as normal.
     """
-    hist = wide[[c for c in wide.columns if c < cur]]
+    hist = wide[[c for c in wide.columns if c != cur]]
     v = wide[cur] if cur in wide.columns else pd.Series(0.0, index=wide.index)
     normal = hist.median(axis=1)
     enough = (hist > 0).sum(axis=1) >= np.ceil(hist.shape[1] / 2)
@@ -364,9 +364,9 @@ def fire_profile_html(area, facts, s, mtd, shift, type_note, quality, h):
         if facts["last"]:
             L = facts["last"]
             rows.append(("Normal level", f"<b>{L['normal']:,.0f} fire detections</b> in a normal season "
-                         f"(middle value of the {L['hist']} seasons)."))
-            rows.append(("Last full season", f"{L['label']}: <b>{L['value']:,.0f} fire detections, "
-                         f"{vs_normal(L['value'], L['normal'])}</b>. It was the {ordinal(L['rank'])} busiest of "
+                         f"(middle value of {L['hist']})."))
+            rows.append(("Last full season" if L["is_latest"] else "Selected season", f"{L['label']}: <b>{L['value']:,.0f} fire detections, "
+                         f"{vs_normal(L['value'], L['normal'])}</b>. It was the {ordinal(L['rank']) + ' ' if L['rank'] > 1 else ''}busiest of "
                          f"{L['n']} seasons." + (" Includes preliminary recent data." if L["caveat"] else "")))
     if shift:
         rows.append(("Has the season moved?", f"{shift['p1']}: {shift['w1']}. {shift['p2']}: {shift['w2']}. "
@@ -409,7 +409,7 @@ td {{ padding:9px 0; border-top:1px solid #e6e5df; }}
 <div class="foot">A fire detection is one satellite pixel seen burning; a large fire produces many detections, so
 these numbers describe burning activity, not the number of fires. "Normal" is the middle value across earlier
 years. Source: NASA FIRMS active-fire data (MODIS since 2000, VIIRS NOAA-20 since 2018), made comparable by the
-Harmonized Fire Calendar. Text generated from computed numbers by fixed templates.</div>
+FireSeason. Text generated from computed numbers by fixed templates.</div>
 </body></html>"""
 
 
@@ -600,8 +600,9 @@ def peak_run(medcal, cover=0.75):
             return [(st0 + k) % 12 + 1 for k in range(length)], best
 
 
-def season_facts(s):
-    """Peak window and last complete season, computed from the harmonized series."""
+def season_facts(s, year=None):
+    """Peak window and one season (default: the last complete one) against the normal season
+    from all OTHER years, computed from the harmonized series."""
     full = s[~s["is_partial"]]
     medcal = full.groupby("cm")["harmonized"].median()
     if medcal.sum() <= 0:
@@ -621,11 +622,13 @@ def season_facts(s):
     seas = g["harmonized"].sum()[g.size() == len(peak)]
     f["seasons"] = [int(y) for y in seas.index]
     if len(seas) >= 3:
-        ly, lv, hist = int(seas.index[-1]), float(seas.iloc[-1]), seas.iloc[:-1]
+        ly = int(year) if year in seas.index else int(seas.index[-1])
+        lv, hist = float(seas.loc[ly]), seas.drop(index=ly)
         last = d[d["season"] == ly]
         f["last"] = dict(
             year=ly, value=lv, normal=float(hist.median()), rank=int((seas > lv).sum()) + 1, n=len(seas),
-            hist=f"{int(hist.index[0])}–{int(hist.index[-1])}",
+            hist=f"the other seasons {int(hist.index[0])}–{int(hist.index[-1])}",
+            is_latest=ly == int(seas.index[-1]),
             label=f"{f['span']} {ly}" if not f["wraps"] else
             f"{MONTHS[peak[0] - 1]} {ly}–{MONTHS[peak[-1] - 1]} {ly + 1}",
             caveat=bool(last["is_nrt"].any() or (last.index > cal["fit_end"]).any()))
@@ -665,7 +668,7 @@ def small_fire_note(box, peak):
     if not small or not big:
         return ""
     verb = "has" if len(small) == 1 else "have"
-    return (f" {join_months(small)} {verb} many small fires (likely agricultural burning); the largest "
+    return (f" {join_months(small)} {verb} many small fires (likely farm or prescribed burning); the largest "
             f"wildfires happen in {join_months(big)}.")
 
 
@@ -739,28 +742,34 @@ else:
     box, prefer = REGIONS[choice], choice
 
 y_min, y_max = int(cal["first_month"][:4]), int(cal["last_month"][:4])
-st.sidebar.header("Period")
-yr = st.sidebar.slider("Years", y_min, y_max, (y_min, y_max))
+ALL_YEARS = (y_min, y_max)
 
 s_all, fallback_share = box_series(box, prefer)
 used_regions = [choice] if prefer else regions_for_box(box)
 title_area = choice if prefer else f"box {box[0]:g}–{box[1]:g}°N, {box[2]:g}–{box[3]:g}°E"
 area_name = choice if prefer else "the selected box"
-s = s_all[(s_all["year"] >= yr[0]) & (s_all["year"] <= yr[1])]
-
-st.title("Harmonized Fire Calendar")
+st.title("FireSeason")
+st.markdown("**When is fire season in your area, is this year normal, and is it changing?**")
 if s_all[["modis", "viirs"]].to_numpy().sum() == 0:
     st.warning("No fire detections in this area. Data are currently loaded for: " + ", ".join(presets) + ".")
     st.stop()
 
 h = headline_numbers(s_all)
-facts = season_facts(s_all)
+base_facts = season_facts(s_all)
+facts = base_facts
 day = pd.Timestamp(cal["last_data_day"])
 tab1, tab2 = st.tabs(["Fire season check", "Method & validation"])
 
 # =================================================== TAB 1: fire season check
 with tab1:
     st.markdown("*For fire planners deciding when and how many seasonal crews to hire*")
+    if base_facts and base_facts.get("seasons") and base_facts["last"]:
+        seasons = base_facts["seasons"]
+        season_year = st.selectbox(
+            "Season year", seasons, index=len(seasons) - 1, key=f"season_year_{choice}_{box}",
+            help="The season to check. It is compared with the normal season from all the other years. "
+                 "This sets the season numbers below and the 'Selected season' map.")
+        facts = season_facts(s_all, season_year)
 
     # ---- the answer
     if facts:
@@ -770,7 +779,7 @@ with tab1:
                f"The busiest month is {MONTHS_LONG[facts['busiest'] - 1]}.")
         if facts["last"]:
             L = facts["last"]
-            ans += (f" The last full season ({L['label']}) was "
+            ans += (f" The {'last full' if L['is_latest'] else 'selected'} season ({L['label']}) was "
                     f"**{vs_normal(L['value'], L['normal'])}**.")
         ans += small_fire_note(box, facts["peak"])
         st.markdown(ans)
@@ -784,9 +793,10 @@ with tab1:
             if facts["last"]:
                 L = facts["last"]
                 lines.append(
-                    f"- **Last full season ({L['label']}): {L['value']:,.0f} fire detections**, "
+                    f"- **{'Last full' if L['is_latest'] else 'Selected'} season ({L['label']}): "
+                    f"{L['value']:,.0f} fire detections**, "
                     f"{vs_normal(L['value'], L['normal'])} ({L['normal']:,.0f} in a normal season, "
-                    f"{L['hist']}). It was the {ordinal(L['rank'])} busiest of {L['n']} seasons."
+                    f"{L['hist']}). It was the {ordinal(L['rank']) + ' ' if L['rank'] > 1 else ''}busiest of {L['n']} seasons."
                     + (" (includes preliminary recent data; see the 2026 note under Method & validation)"
                        if L["caveat"] else ""))
             md = h["median"]
@@ -798,7 +808,7 @@ with tab1:
                     f"Counted the same way throughout, it is {md['harm_post_x']:.2f}×. All numbers on this page "
                     "are counted the same way throughout.")
             st.markdown("\n".join(lines))
-        st.caption("Normal = the middle value across all earlier years. A fire detection is one satellite "
+        st.caption("Normal = the middle value across all the other years. A fire detection is one satellite "
                    "pixel seen burning; a large fire produces many detections.")
         profile = fire_profile_html(area_name[0].upper() + area_name[1:] if prefer else title_area, facts, s_all,
                                     month_to_date(box, prefer), area_shift(s_all),
@@ -811,7 +821,7 @@ with tab1:
     # ---- map
     st.subheader("Where it's unusual")
     v1, v2 = st.columns([3, 1])
-    map_mode = v1.radio("Compare", ["This month so far", "Last full season", "Season shift"], horizontal=True,
+    map_mode = v1.radio("Compare", ["This month so far", "Selected season", "Season shift"], horizontal=True,
                         index=1, label_visibility="collapsed")
     raw_mode = v2.toggle("Without correction", value=False,
                          help="Show the same map from raw satellite counts, without correcting for the "
@@ -828,15 +838,15 @@ with tab1:
             cells = classify_vs_normal(wide, day.year, f"{rng_days} {day.year}")
             what = (f"Each square (about {SQ_KM} km) compares fire activity in {rng_days} {day.year} with the "
                     f"same days in earlier years.")
-        elif map_mode == "Last full season" and facts and facts["last"]:
+        elif map_mode == "Selected season" and facts and facts["last"]:
             t = fine_table(prefer, vbox, "monthly")
             t = t[t["cm"].isin(facts["peak"])].copy()
             t["season"] = np.where(facts["wraps"] & (t["cm"] < facts["peak"][0]), t["year"] - 1, t["year"])
             wide = t.pivot_table(index=["lat_i", "lon_i"], columns="season", values=mcol, aggfunc="sum",
                                  fill_value=0.0).reindex(columns=facts["seasons"], fill_value=0.0)
             cells = classify_vs_normal(wide, facts["last"]["year"], facts["last"]["label"])
-            what = (f"Each square (about {SQ_KM} km) compares the last full fire season ({facts['last']['label']}) "
-                    "with a normal season for that same square.")
+            what = (f"Each square (about {SQ_KM} km) compares the {facts['last']['label']} fire season with a "
+                    "normal season for that same square (the middle value of all its other years).")
         elif map_mode == "Season shift":
             styles = SHIFT_STYLE
             with st.spinner("Comparing fire seasons square by square (first time only)…"):
@@ -860,7 +870,7 @@ with tab1:
                             returned_objects=["last_active_drawing"],
                             center=map_view(squares_extent(cells, box))[0],
                             zoom=map_view(squares_extent(cells, box))[1],
-                            key=f"map_{choice}_{box}_{map_mode}_{raw_mode}")
+                            key=f"map_{choice}_{box}_{map_mode}_{raw_mode}_{facts['last']['year'] if facts and facts['last'] else 0}")
         n_lowq = int((cells["cls"].notna() & cells["lowq"]).sum())
         known = cells[cells["cls"].notna() & ~cells["lowq"]]
         n_skip = int(cells["cls"].isna().sum())
@@ -882,7 +892,7 @@ with tab1:
         else:
             summary = "No squares have enough history for this view."
         st.caption(f"{what} {summary} {n_skip:,} more squares had fire but too little history to judge "
-                   "and are not drawn (a normal level needs fire in at least half of the earlier years)."
+                   "and are not drawn (a normal level needs fire in at least half of the other years)."
                    + (f" {n_lowq:,} more are not drawn because the satellite correction did not test well "
                       f"enough there (monthly error above {QUALITY_MAX_ERROR}% or too little data)."
                       if n_lowq else "")
@@ -906,7 +916,7 @@ with tab1:
 
     # ---- calendar
     st.subheader("Fire activity calendar")
-    heat, shown = calendar_figure(s_all, "harmonized", yr)
+    heat, shown = calendar_figure(s_all, "harmonized", ALL_YEARS)
     if heat is None:
         st.info("No data in the selected years.")
     else:
@@ -944,7 +954,7 @@ with tab1:
     # ---- downloads
     st.subheader("Downloads")
     d1, d2 = st.columns(2)
-    out = s[["modis", "viirs", "naive", "harmonized", "in_overlap", "is_nrt", "is_partial"]].copy()
+    out = s_all[["modis", "viirs", "naive", "harmonized", "in_overlap", "is_nrt", "is_partial"]].copy()
     out["harmonized"] = out["harmonized"].round(1)
     slug = (choice if prefer else "custom_box").lower().replace(" ", "_")
     d1.download_button("Monthly fire activity (CSV)", out.to_csv().encode(),
@@ -959,7 +969,7 @@ with tab1:
         if d2.button("Prepare individual detections (CSV)"):
             hs = raw_hotspots()
             sel = hs[hs["latitude"].between(box[0], box[1]) & hs["longitude"].between(box[2], box[3])
-                     & hs["acq_date"].dt.year.between(yr[0], yr[1])]
+                     ]
             d2.download_button(f"Download {len(sel):,} detections", sel.to_csv(index=False).encode(),
                                f"hotspots_{slug}.csv", "text/csv")
     else:
@@ -974,6 +984,8 @@ with tab2:
         st.info(f"{fallback_share:.0%} of VIIRS hotspots in this box lie outside the preset regions and use "
                 f"the pooled conversion factor ({1/GLOBAL_POOLED:.2f} VIIRS per MODIS hotspot).")
 
+    yr = st.slider("Years shown in the chart and calendar below", y_min, y_max, (y_min, y_max))
+    s = s_all[(s_all["year"] >= yr[0]) & (s_all["year"] <= yr[1])]
     m3, m4, m5 = st.columns(3)
     m3.metric("Naive splice overstates by", fmt_x(h["inflation"]),
               help=f"Raw VIIRS hotspots divided by actual MODIS hotspots, {h['post']}.")
@@ -1048,7 +1060,7 @@ with tab2:
     st.dataframe(cmp, hide_index=True, width="stretch")
     st.caption(f"Baseline: MODIS {h['pre']}, {h['mean']['modis_pre']:,.0f} hotspots per year on average, "
                f"{h['median']['modis_pre']:,.0f} in the median year. Averages are pulled up by a few extreme "
-               "fire years; the median year is not. These windows are fixed and ignore the year slider.")
+               "fire years; the median year is not. These windows are fixed and ignore the year slider above.")
 
     # ---- 2026 note
     st.subheader("2026 note")
@@ -1173,7 +1185,7 @@ calendar month across all years, and it has at least {MIN_ANOMALY_COUNT} hotspot
 
 **Small-fire months.** Within the fire season, a month is described as "many small fires" when its mean
 fire radiative power per MODIS detection is below a third of the most intense season month and under 10%
-of its detections are at night. "Likely agricultural burning" is an inference from low intensity, daytime
+of its detections are at night. "Likely farm or prescribed burning" is an inference from low intensity, daytime
 timing and wide spread; land cover was not checked.
 
 **"Where it's unusual" map.** Display squares are {FINE}°; conversion factors stay per {TILE:g}° tile.

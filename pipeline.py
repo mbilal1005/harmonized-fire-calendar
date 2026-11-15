@@ -1,4 +1,4 @@
-"""Harmonized Fire Calendar - data pipeline.
+"""FireSeason - data pipeline.
 
 Loads every FIRMS CSV under ./data/raw, filters, aggregates to a 0.5 deg grid x
 month x sensor, derives VIIRS -> MODIS-equivalent conversion factors per
