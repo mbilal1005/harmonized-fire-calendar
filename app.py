@@ -758,19 +758,21 @@ h = headline_numbers(s_all)
 base_facts = season_facts(s_all)
 facts = base_facts
 day = pd.Timestamp(cal["last_data_day"])
+if base_facts and base_facts.get("seasons") and base_facts["last"]:
+    seasons = base_facts["seasons"]
+    season_year = st.sidebar.selectbox(
+        "Season year", seasons, index=len(seasons) - 1, key=f"season_year_{choice}_{box}",
+        help="Used in the 'Fire season check' tab. The season to check, compared with the normal season "
+             "from all the other years. It sets the season numbers and the 'Selected season' map.")
+    facts = season_facts(s_all, season_year)
+yr = st.sidebar.slider(
+    "Years in the method charts", y_min, y_max, (y_min, y_max),
+    help="Used in the 'Method & validation' tab: the years shown in its chart and calendar.")
 tab1, tab2 = st.tabs(["Fire season check", "Method & validation"])
 
 # =================================================== TAB 1: fire season check
 with tab1:
     st.markdown("*For fire planners deciding when and how many seasonal crews to hire*")
-    if base_facts and base_facts.get("seasons") and base_facts["last"]:
-        seasons = base_facts["seasons"]
-        season_year = st.selectbox(
-            "Season year", seasons, index=len(seasons) - 1, key=f"season_year_{choice}_{box}",
-            help="The season to check. It is compared with the normal season from all the other years. "
-                 "This sets the season numbers below and the 'Selected season' map.")
-        facts = season_facts(s_all, season_year)
-
     # ---- the answer
     if facts:
         st.markdown(f"## {area_name[0].upper() + area_name[1:]}: the fire season runs "
@@ -984,7 +986,6 @@ with tab2:
         st.info(f"{fallback_share:.0%} of VIIRS hotspots in this box lie outside the preset regions and use "
                 f"the pooled conversion factor ({1/GLOBAL_POOLED:.2f} VIIRS per MODIS hotspot).")
 
-    yr = st.slider("Years shown in the chart and calendar below", y_min, y_max, (y_min, y_max))
     s = s_all[(s_all["year"] >= yr[0]) & (s_all["year"] <= yr[1])]
     m3, m4, m5 = st.columns(3)
     m3.metric("Naive splice overstates by", fmt_x(h["inflation"]),

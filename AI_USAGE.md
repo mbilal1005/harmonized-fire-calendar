@@ -18,3 +18,4 @@
 | USA and Europe | Claude Code (Claude Fable 5.2) | Ran the pipeline and validation for USA and Europe as a separate dataset, added dataset switching, greying of poorly validated tiles and the 0.25 deg display grid | Supplied the downloads; set the quality rules; reviews validation before publishing |
 | Map styling and boundaries | Claude Code (Claude Fable 5.2) | Simplified Natural Earth outlines into data/geo, drew only unusual squares on a faded basemap, checked in a headless browser | Specified the look |
 | Season-year selector and rename | Claude Code (Claude Fable 5.2) | Added the season-year selector (chosen year against all other years), renamed the app to FireSeason, checked Greece 2007, California 2020 and USA in a headless browser | Specified the changes |
+| Sidebar controls | Claude Code (Claude Fable 5.2) | Moved the season-year selector and the years slider into the sidebar under Region, checked in a headless browser | Asked for the placement |
