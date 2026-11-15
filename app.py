@@ -41,6 +41,8 @@ def load_agg():
     for name in ("meta", "validation", "headline"):
         with open(os.path.join(AGG, f"{name}.json")) as fh:
             out[name] = json.load(fh)
+    fpath = os.path.join(AGG, "forecast.json")
+    out["meta"]["forecast"] = json.load(open(fpath)) if os.path.exists(fpath) else None
     return grid, mtd, factors, out["meta"], out["validation"], out["headline"]
 
 
@@ -627,6 +629,36 @@ with tab2:
                        "enough data), so small boxes are less reliable than whole regions.")
     st.caption("Monthly error = median absolute percentage error over months with at least 10 MODIS hotspots. "
                "The model used was picked for the lowest leave-one-year-out monthly error across regions.")
+
+    # ---- ML forecast test
+    fc = meta.get("forecast")
+    fc_regions = [r for r in used_regions if fc and r in fc["regions"]]
+    if fc_regions:
+        any_win = any(fc["regions"][r]["ml_beats_baseline"] for r in fc_regions)
+        st.subheader("Forecast test: machine learning against the seasonal baseline" if any_win else
+                     "We tested ML; the seasonal baseline was as good or better")
+        st.markdown(
+            "We tested whether gradient boosting can predict harmonized monthly hotspots 1 to 3 months ahead "
+            "better than the seasonal baseline (the median of the same calendar month in earlier years). "
+            "Inputs: calendar month, the last three months' anomalies against the same-month median, and "
+            "the same month one year earlier. Test: for every month the model is trained only on data up to "
+            "that month and predicts the next three.")
+        rows = []
+        for r in fc_regions:
+            for hz, x in fc["regions"][r]["metrics"].items():
+                rows.append({"Region": r, "Months ahead": int(hz),
+                             "ML monthly error %": x["ml_mdape_pct"],
+                             "Seasonal baseline monthly error %": x["baseline_mdape_pct"],
+                             "ML log error": x["ml_log_mae"], "Baseline log error": x["baseline_log_mae"],
+                             "Share of months ML closer": x["ml_better_share"], "Test months": x["n"]})
+        st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+        periods = "; ".join(f"{r} {fc['regions'][r]['test_period'].replace('..', ' to ')}" for r in fc_regions)
+        st.caption(f"Monthly error = median absolute percentage error. Test months: {periods}. Model settings "
+                   "were fixed in advance and not tuned on the test. "
+                   + ("" if any_win else "Because ML did not beat the baseline, no forecast is shown in the "
+                      "Fire season check tab. ")
+                   + "Both errors are large: last season's activity says little about a given month ahead, "
+                   "so the calendar of normal months remains the planning basis.")
 
     # ---- raw per-sensor calendar
     with st.expander("Calendar per sensor (raw counts)"):

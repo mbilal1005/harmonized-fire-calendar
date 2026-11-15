@@ -12,6 +12,9 @@ calendar for a chosen area.
 
 - Pick California, Greece or a custom latitude/longitude box, and a range of years.
 - Compare three series: the naive splice (MODIS, then raw VIIRS), the harmonized series, and actual MODIS.
+- Get a plain-language "Fire season check" for fire planners: peak months, last season against normal,
+  and the current month against normal.
+- Draw a rectangle on the map to check a smaller area.
 - Browse a year-by-month calendar heatmap, raw per sensor or harmonized, with anomalous months outlined.
 - See the validation results next to the data, and download the harmonized monthly series as CSV.
 
@@ -61,8 +64,10 @@ NASA POWER is listed in our plan as a climate context layer; it is not used in t
    2018-04 to 2025-12. A tile-month with fewer than 50 MODIS hotspots uses the tile's pooled factor; a
    tile with fewer than 200 uses the region's pooled factor.
 4. **Harmonize.** MODIS before 2018-04; VIIRS × factor from 2018-04 on. Actual MODIS is kept for comparison.
-5. **Flag anomalies.** A month is anomalous if it exceeds the median + 2 × scaled MAD of the same
-   calendar month, and has at least 10 hotspots.
+5. **Flag anomalies.** A month is anomalous if log(1 + count) exceeds the median + 2 × scaled MAD of the
+   same calendar month, and it has at least 10 hotspots.
+6. **Fire season.** The shortest run of consecutive months holding at least 75% of a typical year
+   (sum of calendar-month medians).
 
 Regions are bounding boxes in `regions.json`. Adding one needs the CSVs in `data/raw/` and one line there.
 
@@ -106,6 +111,27 @@ prediction in both regions:
 In California this is well outside the normal error. In Greece it is within the normal year-to-year
 spread and rests on few hotspots, so it is only suggestive. The cause is unverified.
 
+### ML forecast test (negative result)
+
+We tested whether gradient boosting (scikit-learn `HistGradientBoostingRegressor`) predicts harmonized
+monthly hotspots 1 to 3 months ahead better than the seasonal baseline (median of the same calendar month
+in earlier years). Features: calendar month, the last three months' anomalies against the same-month
+median, and the same month one year earlier. Test: rolling forward, trained only on data up to month t,
+predicting t+1 to t+3, for target months 2010-12 to 2026-10. Settings were fixed in advance, not tuned.
+
+| Region | Months ahead | ML monthly error | Seasonal baseline monthly error |
+|---|---|---|---|
+| California | 1 | 41.2% | 39.7% |
+| California | 2 | 45.7% | 38.5% |
+| California | 3 | 45.6% | 39.7% |
+| Greece | 1 | 60.9% | 52.9% |
+| Greece | 2 | 55.3% | 52.9% |
+| Greece | 3 | 54.3% | 52.9% |
+
+The baseline was as good or better at every horizon in both regions, so the app shows no ML forecast.
+The comparison is in the "Method & validation" tab. Run it with `python forecast.py`
+(needs `requirements-pipeline.txt`).
+
 ## Limits
 
 - Hotspots are pixels, not fire events. One large fire produces many pixels, so a few extreme months
@@ -137,6 +163,7 @@ and run:
 |---|---|
 | `pipeline.py` | Load, filter, aggregate, fit factors, validate, write `data/agg/` |
 | `app.py` | Streamlit app |
+| `forecast.py` | ML forecast test against the seasonal baseline; writes `data/agg/forecast.json` |
 | `regions.json` | Region bounding boxes |
 | `data/agg/` | Aggregates, factors, `validation.json`, `headline.json`, `meta.json` |
 | `AI_USAGE.md` | Which AI tool did what |

@@ -1,0 +1,135 @@
+{
+  "model": "sklearn HistGradientBoostingRegressor",
+  "params": {
+    "max_iter": 200,
+    "learning_rate": 0.05,
+    "max_depth": 3,
+    "min_samples_leaf": 10,
+    "l2_regularization": 1.0,
+    "random_state": 0
+  },
+  "features": [
+    "target_month",
+    "horizon",
+    "anom_t",
+    "anom_t1",
+    "anom_t2",
+    "anom_same_month_last_year",
+    "normal_log"
+  ],
+  "target": "log1p(harmonized hotspots) minus the same-month median (anomaly), per region",
+  "baseline": "climatology: same-month historical median, from data up to the forecast origin",
+  "test": "rolling forward: train on data up to month t, predict t+1..t+3; first origin after 10 years",
+  "rule": "ML counts as better for a region only if both its 1-month-ahead MdAPE and its log-scale mean absolute error are lower than the baseline's",
+  "last_data_day": "2026-11-15",
+  "regions": {
+    "California": {
+      "test_period": "2010-12..2026-10",
+      "origin": "2026-10",
+      "metrics": {
+        "1": {
+          "n": 191,
+          "n_mdape": 191,
+          "ml_mdape_pct": 41.2,
+          "baseline_mdape_pct": 39.7,
+          "ml_log_mae": 0.599,
+          "baseline_log_mae": 0.583,
+          "ml_better_share": 0.49
+        },
+        "2": {
+          "n": 190,
+          "n_mdape": 190,
+          "ml_mdape_pct": 45.7,
+          "baseline_mdape_pct": 38.5,
+          "ml_log_mae": 0.601,
+          "baseline_log_mae": 0.579,
+          "ml_better_share": 0.47
+        },
+        "3": {
+          "n": 189,
+          "n_mdape": 189,
+          "ml_mdape_pct": 45.6,
+          "baseline_mdape_pct": 39.7,
+          "ml_log_mae": 0.623,
+          "baseline_log_mae": 0.581,
+          "ml_better_share": 0.44
+        }
+      },
+      "ml_beats_baseline": false,
+      "forecast": [
+        {
+          "month": "2026-11",
+          "horizon": 1,
+          "ml": 397.6,
+          "normal": 532.0
+        },
+        {
+          "month": "2026-12",
+          "horizon": 2,
+          "ml": 127.4,
+          "normal": 187.2
+        },
+        {
+          "month": "2027-01",
+          "horizon": 3,
+          "ml": 111.7,
+          "normal": 138.3
+        }
+      ]
+    },
+    "Greece": {
+      "test_period": "2010-12..2026-10",
+      "origin": "2026-10",
+      "metrics": {
+        "1": {
+          "n": 191,
+          "n_mdape": 176,
+          "ml_mdape_pct": 60.9,
+          "baseline_mdape_pct": 52.9,
+          "ml_log_mae": 0.723,
+          "baseline_log_mae": 0.666,
+          "ml_better_share": 0.42
+        },
+        "2": {
+          "n": 190,
+          "n_mdape": 176,
+          "ml_mdape_pct": 55.3,
+          "baseline_mdape_pct": 52.9,
+          "ml_log_mae": 0.714,
+          "baseline_log_mae": 0.669,
+          "ml_better_share": 0.43
+        },
+        "3": {
+          "n": 189,
+          "n_mdape": 176,
+          "ml_mdape_pct": 54.3,
+          "baseline_mdape_pct": 52.9,
+          "ml_log_mae": 0.706,
+          "baseline_log_mae": 0.672,
+          "ml_better_share": 0.48
+        }
+      },
+      "ml_beats_baseline": false,
+      "forecast": [
+        {
+          "month": "2026-11",
+          "horizon": 1,
+          "ml": 73.2,
+          "normal": 108.5
+        },
+        {
+          "month": "2026-12",
+          "horizon": 2,
+          "ml": 9.9,
+          "normal": 12.3
+        },
+        {
+          "month": "2027-01",
+          "horizon": 3,
+          "ml": 19.6,
+          "normal": 13.8
+        }
+      ]
+    }
+  }
+}
