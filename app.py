@@ -424,36 +424,53 @@ def squares_extent(cells, box):
             max(box[2], lo.quantile(0.02) - 1), min(box[3], lo.quantile(0.98) + 1 + FINE))
 
 
-def unusual_map(cells, styles, box):
-    """Light basemap, one small square per cell coloured by class, rectangle-only draw tool."""
+@st.cache_data
+def boundary_geojson(name):
+    """Natural Earth outline for a preset region (built by scripts/make_boundaries.py), if present."""
+    path = os.path.join("data", "geo", f"{name.lower()}.geojson")
+    if not os.path.exists(path):
+        return None
+    with open(path) as fh:
+        return json.load(fh)
+
+
+def unusual_map(cells, styles, box, prefer=None):
+    """Faded light basemap, coloured squares only where something is unusual, real region outline,
+    rectangle-only draw tool. 'About normal' and unjudged squares are left out so colour stands out."""
     centre, zoom = map_view(squares_extent(cells, box))
     esri = "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_{}/MapServer/tile/{{z}}/{{y}}/{{x}}"
     fmap = folium.Map(location=list(centre), zoom_start=zoom, tiles=None, control_scale=True, prefer_canvas=True)
-    folium.TileLayer(esri.format("Base"), attr="Esri, HERE, Garmin, © OpenStreetMap contributors",
-                     name="Light basemap", control=False).add_to(fmap)
+    folium.TileLayer(esri.format("Base"), attr="Esri, HERE, Garmin, © OpenStreetMap contributors; "
+                     "boundaries: Natural Earth", name="Light basemap", control=False, opacity=0.45).add_to(fmap)
+    # white behind the faded tiles (Leaflet's default background is grey, which would darken them)
+    fmap.get_root().header.add_child(folium.Element("<style>.leaflet-container{background:#ffffff;}</style>"))
+    outline = boundary_geojson(prefer) if prefer else None
+    if outline:
+        folium.GeoJson(outline, interactive=False,
+                       style_function=lambda f: dict(color="#55544f", weight=1, opacity=0.9, fill=False)).add_to(fmap)
+    else:
+        folium.Rectangle([[box[0], box[2]], [box[1], box[3]]], color="#55544f", weight=1, fill=False,
+                         interactive=False).add_to(fmap)
+    show = cells[cells["cls"].notna() & (cells["cls"] != 0)]
+    if "lowq" in show:
+        show = show[~show["lowq"]]
     feats = []
-    cells = cells[cells["cls"].notna()]
-    if "lowq" not in cells:
-        cells = cells.assign(lowq=False)
-    for lat_i, lon_i, cls, tip, lowq in cells[["lat_i", "lon_i", "cls", "tip", "lowq"]].itertuples(index=False):
+    for lat_i, lon_i, cls, tip in show[["lat_i", "lon_i", "cls", "tip"]].itertuples(index=False):
         la, lo = round(lat_i * FINE, 4), round(lon_i * FINE, 4)
         la2, lo2 = round(la + FINE, 4), round(lo + FINE, 4)
-        known = True
-        feats.append(dict(type="Feature", properties=dict(
-            fill=LOWQ_STYLE[0] if lowq else styles[int(cls)][0], known=True,
-            tip=(LOWQ_STYLE[1] if lowq else styles[int(cls)][1]) + ". " + tip),
-            geometry=dict(type="Polygon", coordinates=[[[lo, la], [lo2, la], [lo2, la2], [lo, la2], [lo, la]]])))
+        colour, label = styles[int(cls)]
+        feats.append(dict(type="Feature", properties=dict(fill=colour, tip=label + ". " + tip),
+                          geometry=dict(type="Polygon",
+                                        coordinates=[[[lo, la], [lo2, la], [lo2, la2], [lo, la2], [lo, la]]])))
     if feats:
         folium.GeoJson(
             dict(type="FeatureCollection", features=feats),
             # a hairline stroke in the fill colour closes the sub-pixel gaps between squares at low zoom
-            style_function=lambda f: dict(color=f["properties"]["fill"], weight=0.6, opacity=0.9,
-                                          fillColor=f["properties"]["fill"], fillOpacity=0.9),
+            style_function=lambda f: dict(color=f["properties"]["fill"], weight=0.6, opacity=0.95,
+                                          fillColor=f["properties"]["fill"], fillOpacity=0.95),
             tooltip=folium.GeoJsonTooltip(fields=["tip"], labels=False)).add_to(fmap)
     folium.TileLayer(esri.format("Reference"), attr="Esri", name="Place names", control=False,
-                     overlay=True).add_to(fmap)
-    folium.Rectangle([[box[0], box[2]], [box[1], box[3]]], color="#b5b4ad", weight=1, fill=False,
-                     interactive=False).add_to(fmap)
+                     overlay=True, opacity=0.8).add_to(fmap)
     Draw(draw_options=dict(polyline=False, polygon=False, circle=False, marker=False, circlemarker=False,
                            rectangle=dict(shapeOptions=dict(color="#1f1f1e", weight=2))),
          edit_options=dict(edit=False, remove=False)).add_to(fmap)
@@ -461,13 +478,13 @@ def unusual_map(cells, styles, box):
 
 
 def legend_html(styles):
+    """Legend for the colours actually drawn (the neutral class is not drawn)."""
     sw = "".join(
         f'<span style="display:inline-flex;align-items:center;margin:0 14px 4px 0;white-space:nowrap">'
         f'<span style="width:14px;height:14px;background:{c};display:inline-block;margin-right:6px"></span>'
-        f'{label}</span>' for _, (c, label) in sorted(styles.items()))
-    sw += (f'<span style="display:inline-flex;align-items:center;white-space:nowrap">'
-           f'<span style="width:14px;height:14px;background:{LOWQ_STYLE[0]};border:1px solid #b5b4ad;'
-           f'display:inline-block;margin-right:6px"></span>{LOWQ_STYLE[1]}</span>')
+        f'{label}</span>' for k, (c, label) in sorted(styles.items()) if k != 0)
+    sw += (f'<span style="white-space:nowrap;color:{MUTED}">No colour: {styles[0][1].lower()}, or not enough '
+           'to judge</span>')
     return f'<div style="font-size:0.9rem;color:{INK};line-height:1.9">{sw}</div>'
 
 
@@ -839,7 +856,7 @@ with tab1:
         out_map = None
     else:
         st.markdown(legend_html(styles), unsafe_allow_html=True)
-        out_map = st_folium(unusual_map(cells, styles, box), height=600, use_container_width=True,
+        out_map = st_folium(unusual_map(cells, styles, box, prefer), height=600, use_container_width=True,
                             returned_objects=["last_active_drawing"],
                             center=map_view(squares_extent(cells, box))[0],
                             zoom=map_view(squares_extent(cells, box))[1],
@@ -866,9 +883,10 @@ with tab1:
             summary = "No squares have enough history for this view."
         st.caption(f"{what} {summary} {n_skip:,} more squares had fire but too little history to judge "
                    "and are not drawn (a normal level needs fire in at least half of the earlier years)."
-                   + (f" {n_lowq:,} squares are shown in pale grey because the satellite correction did not "
-                      f"test well enough there (monthly error above {QUALITY_MAX_ERROR}% or too little data)."
-                      if n_lowq else ""))
+                   + (f" {n_lowq:,} more are not drawn because the satellite correction did not test well "
+                      f"enough there (monthly error above {QUALITY_MAX_ERROR}% or too little data)."
+                      if n_lowq else "")
+                   + f" Squares that are {mid_word} are left blank so the unusual ones stand out.")
         if raw_mode:
             st.warning("You are looking at the uncorrected map: raw satellite counts, where a sharper "
                        "satellite since 2018 inflates recent years.")
@@ -1175,7 +1193,7 @@ calendar-month medians of the harmonized series.
 - The series is "Terra + Aqua equivalent" as observed in 2018–2025. Cloud cover, overpass times, satellite orbit drift and the larger night-time share of VIIRS detections are absorbed into the factor, not modelled.
 - In 2026 MODIS reports fewer hotspots relative to VIIRS than before (cause unverified), so 2026 is excluded from the factor fit.
 - Near-real-time data (from {cal['nrt_start']}) have no fire-type classification. Known static heat sources are masked at 0.01°, which removes most but not all non-vegetation detections.
-- Regions mixing forest and cropland burning may need finer tiles; tile errors are listed above and tiles that tested poorly are greyed out on the map.
+- Regions mixing forest and cropland burning may need finer tiles; tile errors are listed above and tiles that tested poorly are left blank on the map.
 - Conflict-related fires in Ukraine since 2022 appear as anomalies; they are real detections, not wildfire or farm burning.
 """)
 

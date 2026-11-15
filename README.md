@@ -125,7 +125,7 @@ separate dataset (`data/agg_wide/`) so the country-clipped California and Greece
 Tile error spread (leave one year out, calendar-month factor): USA 49 of 81 tiles had
 enough data to test, median 21.6%, range 10.0–58.0%, 8 above 30%. Europe 49 of
 70 tiles, median 23.5%, range 11.6–50.7%, 8 above 30%. On the map, squares in tiles
-above 30% or without enough data are shown in pale grey ("Correction not reliable here").
+above 30% or without enough data are left blank, and their number is stated under the map.
 
 ### MODIS drift check, 2026
 
@@ -171,8 +171,8 @@ The comparison is in the "Method & validation" tab. Run it with `python forecast
 - Harmonized 2026 values show what MODIS would have reported at its 2018–2025 behaviour.
 - Near-real-time data have no fire-type classification. The static-source mask removes most but not all
   non-vegetation detections, and on archive data it also removes 0.4–3.9% of real vegetation fires.
-- Regions mixing forest and cropland burning may need finer tiles. Tiles that tested poorly are greyed
-  out on the map; some contain gas flaring that the fire-type filter does not fully remove.
+- Regions mixing forest and cropland burning may need finer tiles. Tiles that tested poorly are left
+  blank on the map; some contain gas flaring that the fire-type filter does not fully remove.
 - Conflict-related fires in Ukraine since 2022 appear as anomalies; they are real detections, not wildfire
   or farm burning.
 - A preset region is its download area (country outline for California and Greece, a box for USA and
@@ -205,6 +205,7 @@ FIRE_RAW_DIRS=data/raw_big FIRE_AGG_DIR=data/agg_wide FIRE_REGIONS=regions_wide.
 | `app.py` | Streamlit app |
 | `forecast.py` | ML forecast test against the seasonal baseline; writes `data/agg/forecast.json` |
 | `regions.json` | Region bounding boxes |
+| `data/geo/` | Region outlines from Natural Earth (public domain), built by `scripts/make_boundaries.py` |
 | `data/agg/` | Aggregates, factors, `validation.json`, `headline.json`, `meta.json` |
 | `AI_USAGE.md` | Which AI tool did what |
 
