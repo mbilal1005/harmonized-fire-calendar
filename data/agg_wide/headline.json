@@ -1,0 +1,41 @@
+{
+  "model": "calendar_month",
+  "regions": [
+    {
+      "region": "USA",
+      "model": "calendar_month",
+      "pre_years": "2001-2017",
+      "post_years": "2019-2025",
+      "modis_per_year_pre": 105278,
+      "modis_per_year_post": 112771,
+      "viirs_per_year_post": 426317,
+      "harmonized_per_year_post": 113857,
+      "naive_change_x": 4.05,
+      "modis_change_x": 1.07,
+      "harmonized_change_x": 1.08,
+      "naive_inflation_x": 3.78,
+      "median_year_modis_pre": 105342,
+      "median_year_modis_post": 111740,
+      "median_year_viirs_post": 427993,
+      "sentence": "USA: splicing raw VIIRS onto MODIS shows 4.05x the hotspots per year in 2019-2025 compared with 2001-2017; MODIS itself shows 1.07x. The naive splice overstates post-2018 activity by a factor of 3.78; the harmonized series shows 1.08x."
+    },
+    {
+      "region": "Europe",
+      "model": "calendar_month",
+      "pre_years": "2001-2017",
+      "post_years": "2019-2025",
+      "modis_per_year_pre": 102339,
+      "modis_per_year_post": 63175,
+      "viirs_per_year_post": 219786,
+      "harmonized_per_year_post": 64165,
+      "naive_change_x": 2.15,
+      "modis_change_x": 0.62,
+      "harmonized_change_x": 0.63,
+      "naive_inflation_x": 3.48,
+      "median_year_modis_pre": 98053,
+      "median_year_modis_post": 58734,
+      "median_year_viirs_post": 221678,
+      "sentence": "Europe: splicing raw VIIRS onto MODIS shows 2.15x the hotspots per year in 2019-2025 compared with 2001-2017; MODIS itself shows 0.62x. The naive splice overstates post-2018 activity by a factor of 3.48; the harmonized series shows 0.63x."
+    }
+  ]
+}

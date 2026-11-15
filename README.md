@@ -10,7 +10,7 @@ NASA Space Apps 2026, challenge "Harmonization of MODIS and VIIRS Hot Spots".
 A web app that turns MODIS and VIIRS active-fire hotspots into one consistent monthly burning-activity
 calendar for a chosen area.
 
-- Pick California, Greece or a custom latitude/longitude box, and a range of years.
+- Pick Greece, California, Europe, USA or a custom latitude/longitude box, and a range of years.
 - Compare three series: the naive splice (MODIS, then raw VIIRS), the harmonized series, and actual MODIS.
 - Get a plain-language "Fire season check" for fire planners: peak months, last season against normal,
   and the current month against normal.
@@ -52,7 +52,8 @@ are fitted on the same period. The independent test is the validation below.
 | NASA FIRMS | VIIRS NOAA-20 Collection 2 active fires, 375 m | 2018-04 to 2026-11 |
 
 Downloaded from the [FIRMS archive download](https://firms.modaps.eosdis.nasa.gov/download/) as CSV for
-California and Greece, on 2026-11-15. After filtering, 1,020,953 hotspots are used. Raw files are not in
+California, Greece, the USA and Europe, on 2026-11-15. After filtering, 1,020,953 hotspots are used for
+California and Greece and 10,795,593 for the USA and Europe. Raw files are not in
 this repository (too large); the small aggregates in `data/agg/` are.
 
 NASA POWER is listed in our plan as a climate context layer; it is not used in the current version.
@@ -101,6 +102,31 @@ averaged over regions (16.8%, against 20.1% pooled and 19.6% power law) and is t
 The forward test fits on 2018-04 to 2022-12 and predicts 2023-01 to 2025-12. At the level of single 5°
 tiles the median monthly error of the model used is 19.8% in California and 31.0% in Greece.
 
+### USA and Europe
+
+The same method and tests were run on the whole USA and on Europe (box 35–71°N, 11°W–40°E), built as a
+separate dataset (`data/agg_wide/`) so the country-clipped California and Greece numbers stay unchanged.
+
+| Region | Test | Model | Monthly error | Median annual error | Worst annual error | Bias | Correlation |
+|---|---|---|---|---|---|---|---|
+| USA | Leave one year out | Pooled | 8.4% | 2.9% | 9.6% | +1.9% | 0.984 |
+| USA | Leave one year out | **Calendar-month** | **7.0%** | 2.6% | 12.5% | +2.7% | 0.988 |
+| USA | Leave one year out | Power law | 10.2% | 4.3% | 10.8% | +2.1% | 0.981 |
+| USA | Forward | Pooled | 9.9% | 7.8% | 10.8% | +6.9% | 0.983 |
+| USA | Forward | **Calendar-month** | **9.7%** | 12.6% | 14.1% | +9.9% | 0.978 |
+| USA | Forward | Power law | 9.5% | 8.4% | 11.4% | +7.4% | 0.972 |
+| Europe | Leave one year out | Pooled | 11.5% | 4.3% | 14.4% | −0.1% | 0.982 |
+| Europe | Leave one year out | **Calendar-month** | **7.1%** | 3.2% | 11.0% | +0.9% | 0.992 |
+| Europe | Leave one year out | Power law | 8.4% | 4.5% | 13.6% | −2.6% | 0.983 |
+| Europe | Forward | Pooled | 10.8% | 4.5% | 15.2% | +7.3% | 0.990 |
+| Europe | Forward | **Calendar-month** | **8.8%** | 4.1% | 11.1% | +5.5% | 0.990 |
+| Europe | Forward | Power law | 9.4% | 8.2% | 13.6% | +4.0% | 0.982 |
+
+Tile error spread (leave one year out, calendar-month factor): USA 49 of 81 tiles had
+enough data to test, median 21.6%, range 10.0–58.0%, 8 above 30%. Europe 49 of
+70 tiles, median 23.5%, range 11.6–50.7%, 8 above 30%. On the map, squares in tiles
+above 30% or without enough data are shown in pale grey ("Correction not reliable here").
+
 ### MODIS drift check, 2026
 
 2026 is left out of the factor fit. For January to July 2026, actual MODIS is below the harmonized
@@ -145,7 +171,12 @@ The comparison is in the "Method & validation" tab. Run it with `python forecast
 - Harmonized 2026 values show what MODIS would have reported at its 2018–2025 behaviour.
 - Near-real-time data have no fire-type classification. The static-source mask removes most but not all
   non-vegetation detections, and on archive data it also removes 0.4–3.9% of real vegetation fires.
-- Tested on California and Greece only. Regions mixing forest and cropland burning may need finer tiles.
+- Regions mixing forest and cropland burning may need finer tiles. Tiles that tested poorly are greyed
+  out on the map; some contain gas flaring that the fire-type filter does not fully remove.
+- Conflict-related fires in Ukraine since 2022 appear as anomalies; they are real detections, not wildfire
+  or farm burning.
+- A preset region is its download area (country outline for California and Greece, a box for USA and
+  Europe); a custom box counts everything inside it.
 
 ## Run locally
 
@@ -160,6 +191,12 @@ and run:
 
 ```bash
 .venv/bin/python pipeline.py all
+```
+
+The USA/Europe dataset is built from its own downloads in `data/raw_big/`:
+
+```bash
+FIRE_RAW_DIRS=data/raw_big FIRE_AGG_DIR=data/agg_wide FIRE_REGIONS=regions_wide.json .venv/bin/python pipeline.py all
 ```
 
 | File | Purpose |

@@ -3,6 +3,7 @@
 Reads only the small aggregates in ./data/agg (built by pipeline.py).
 Run:  streamlit run app.py
 """
+import functools
 import glob
 import json
 import os
@@ -16,7 +17,6 @@ from folium.plugins import Draw
 from plotly.colors import sample_colorscale
 from streamlit_folium import st_folium
 
-AGG = "data/agg"
 RAW = "data/raw"
 C_HARM, C_NAIVE, C_MODIS = "#2a78d6", "#eb6834", "#199e70"   # validated colorblind-safe trio, >= 3:1 on white
 INK, MUTED, GRIDC = "#1f1f1e", "#6b6a63", "#e6e5df"
@@ -32,8 +32,29 @@ st.set_page_config(page_title="Harmonized Fire Calendar", page_icon="🔥", layo
 
 
 # ------------------------------------------------------------------ data
+# Two datasets: country-clipped downloads (California, Greece) and wide boxes (USA, Europe).
+# They stay separate so that the Greece and California numbers never include neighbouring countries.
+DATASETS = [d for d in ("data/agg", "data/agg_wide") if os.path.exists(os.path.join(d, "meta.json"))]
+REGION_DS, REGION_BOX = {}, {}
+for _d in DATASETS:
+    with open(os.path.join(_d, "meta.json")) as _fh:
+        for _name, _box in json.load(_fh)["regions"].items():
+            REGION_DS.setdefault(_name, _d)
+            REGION_BOX.setdefault(_name, tuple(_box))
+PRESETS = sorted(REGION_DS, key=lambda n: (["Greece", "California", "Europe", "USA"] + [n]).index(n))
+
+# A rectangle drawn on the map becomes the custom box (applied before the widgets are built).
+for _k, _v in (("lat0", 37.5), ("lat1", 39.0), ("lon0", 22.5), ("lon1", 24.5)):
+    st.session_state.setdefault(_k, _v)
+if "pending_box" in st.session_state:
+    _b = st.session_state.pop("pending_box")
+    st.session_state.update(region_choice="Custom box", lat0=_b[0], lat1=_b[1], lon0=_b[2], lon1=_b[3])
+# The dataset follows the selected region; a custom box uses the widest dataset.
+AGG = REGION_DS.get(st.session_state.get("region_choice", PRESETS[0]), DATASETS[-1])
+
+
 @st.cache_data
-def load_agg():
+def load_agg(AGG):
     grid = pd.read_parquet(os.path.join(AGG, "grid_monthly.parquet"))
     mtd = pd.read_parquet(os.path.join(AGG, "mtd_monthly.parquet"))
     factors = pd.read_parquet(os.path.join(AGG, "factors.parquet"))
@@ -48,7 +69,21 @@ def load_agg():
     return grid, mtd, fine, fine_mtd, factors, out["meta"], out["validation"], out["headline"]
 
 
-grid, mtd_grid, fine_grid, fine_mtd_grid, factors, meta, val, head = load_agg()
+def cached(fn):
+    """st.cache_data keyed on the active dataset as well as the arguments."""
+    @st.cache_data(show_spinner=False)
+    @functools.wraps(fn)
+    def inner(ds, *a, **k):
+        return fn(*a, **k)
+
+    @functools.wraps(fn)
+    def outer(*a, **k):
+        return inner(AGG, *a, **k)
+    outer.__wrapped__ = fn
+    return outer
+
+
+grid, mtd_grid, fine_grid, fine_mtd_grid, factors, meta, val, head = load_agg(AGG)
 cal = meta["calendar"]
 REGIONS = {k: tuple(v) for k, v in meta["regions"].items()}
 GRID, TILE, FINE = meta["grid_deg"], meta["tile_deg"], meta.get("fine_deg", 0.1)
@@ -118,15 +153,13 @@ SHIFT_MIN_TOTAL, SHIFT_MIN_YEARS = 20, 4
 
 
 def view_box(box, prefer):
-    """Area whose squares are drawn: the preset region(s) around the selection."""
-    names = [prefer] if prefer else regions_for_box(box)
-    if not names:
-        return (box[0] - 2, box[1] + 2, box[2] - 2, box[3] + 2)
-    bs = [REGIONS[n] for n in names]
-    return (min(b[0] for b in bs), max(b[1] for b in bs), min(b[2] for b in bs), max(b[3] for b in bs))
+    """Area whose squares are drawn: the preset region, or a custom box with a 3 degree margin."""
+    if prefer:
+        return REGIONS[prefer]
+    return (box[0] - 3, box[1] + 3, box[2] - 3, box[3] + 3)
 
 
-@st.cache_data
+@cached
 def fine_table(prefer, vbox, which):
     """Per 0.1 deg square and month: corrected ('harm') and uncorrected ('naive') fire detections."""
     f = fine_grid if which == "monthly" else fine_mtd_grid
@@ -189,7 +222,7 @@ def _runs(V, cover=0.75):
     return start, length
 
 
-@st.cache_data(show_spinner="Comparing fire seasons…")
+@cached
 def season_shift(prefer, vbox, col):
     """Per square: fire-season start and length in the two periods, and whether the change is clear.
 
@@ -199,43 +232,62 @@ def season_shift(prefer, vbox, col):
     """
     t = fine_table(prefer, vbox, "monthly")
     (a1, b1), (a2, b2) = SHIFT_PERIODS
-    years = np.arange(a1, b2 + 1)
-    n1 = b1 - a1 + 1
+    ny, n1 = b2 - a1 + 1, b1 - a1 + 1
     t = t[t["year"].between(a1, b2)]
+    cells = t[["lat_i", "lon_i"]].drop_duplicates().reset_index(drop=True)
+    ci = t.merge(cells.reset_index(), on=["lat_i", "lon_i"])["index"].to_numpy()
+    Y = np.zeros((len(cells), ny, 12))
+    np.add.at(Y, (ci, (t["year"] - a1).to_numpy(), (t["cm"] - 1).to_numpy()), t[col].to_numpy())
+    yt = Y.sum(axis=2)
+    good = ((yt[:, :n1].sum(axis=1) >= SHIFT_MIN_TOTAL) & (yt[:, n1:].sum(axis=1) >= SHIFT_MIN_TOTAL)
+            & ((yt[:, :n1] > 0).sum(axis=1) >= SHIFT_MIN_YEARS) & ((yt[:, n1:] > 0).sum(axis=1) >= SHIFT_MIN_YEARS))
+    s1, l1 = _runs(Y[:, :n1].sum(axis=1))
+    s2, l2 = _runs(Y[:, n1:].sum(axis=1))
     rng = np.random.default_rng(0)
-    perms = np.array([rng.permutation(len(years)) for _ in range(SHIFT_PERMS)])
+    perms = np.array([rng.permutation(ny) for _ in range(SHIFT_PERMS)])
     p1, p2 = f"{a1}–{b1}", f"{a2}–{b2}"
-    rows, nodata = [], []
-    for cell, d in t.groupby(["lat_i", "lon_i"]):
-        Y = d.pivot_table(index="year", columns="cm", values=col, aggfunc="sum", fill_value=0.0) \
-            .reindex(index=years, columns=range(1, 13), fill_value=0.0).to_numpy()
-        yt = Y.sum(axis=1)
-        if not (yt[:n1].sum() >= SHIFT_MIN_TOTAL and yt[n1:].sum() >= SHIFT_MIN_TOTAL
-                and (yt[:n1] > 0).sum() >= SHIFT_MIN_YEARS and (yt[n1:] > 0).sum() >= SHIFT_MIN_YEARS):
-            if yt.sum() > 0:
-                nodata.append(cell)
-            continue
-        (s1,), (l1,) = _runs(Y[:n1].sum(axis=0, keepdims=True))
-        (s2,), (l2,) = _runs(Y[n1:].sum(axis=0, keepdims=True))
-        dlen, dstart = l2 - l1, ((s2 - s1 + 6) % 12) - 6
-        A, B = Y[perms[:, :n1]].sum(axis=1), Y[perms[:, n1:]].sum(axis=1)
+    cls, tip = np.full(len(cells), np.nan), np.full(len(cells), "", dtype=object)
+    tip[:] = "Too few fires in one or both periods to describe a season"
+    for c in np.flatnonzero(good):
+        dlen, dstart = l2[c] - l1[c], ((s2[c] - s1[c] + 6) % 12) - 6
+        A, B = Y[c][perms[:, :n1]].sum(axis=1), Y[c][perms[:, n1:]].sum(axis=1)
         ok = (A.sum(axis=1) > 0) & (B.sum(axis=1) > 0)
         sa, la = _runs(A[ok])
         sb, lb = _runs(B[ok])
         p_len = float((np.abs(lb - la) >= abs(dlen)).mean()) if ok.any() else 1.0
         p_start = float((np.abs(((sb - sa + 6) % 12) - 6) >= abs(dstart)).mean()) if ok.any() else 1.0
-        cls = 0
+        k = 0
         if abs(dlen) >= 1 and p_len < SHIFT_ALPHA:
-            cls = 2 if dlen > 0 else -2
+            k = 2 if dlen > 0 else -2
         elif abs(dstart) >= 1 and p_start < SHIFT_ALPHA:
-            cls = 1 if dstart < 0 else -1
-        rows.append((cell[0], cell[1], cls,
-                     f"{p1}: starts {MONTHS[s1 - 1]}, lasts {l1} month{'s' if l1 > 1 else ''}; "
-                     f"{p2}: starts {MONTHS[s2 - 1]}, lasts {l2} month{'s' if l2 > 1 else ''}"))
-    out = pd.DataFrame(rows, columns=["lat_i", "lon_i", "cls", "tip"])
-    nod = pd.DataFrame(nodata, columns=["lat_i", "lon_i"]).assign(
-        cls=np.nan, tip="Too few fires in one or both periods to describe a season")
-    return pd.concat([out, nod], ignore_index=True)
+            k = 1 if dstart < 0 else -1
+        cls[c] = k
+        tip[c] = (f"{p1}: starts {MONTHS[s1[c] - 1]}, lasts {l1[c]} month{'s' if l1[c] > 1 else ''}; "
+                  f"{p2}: starts {MONTHS[s2[c] - 1]}, lasts {l2[c]} month{'s' if l2[c] > 1 else ''}")
+    out = cells.assign(cls=cls, tip=tip)
+    return out[yt.sum(axis=1) > 0].reset_index(drop=True)
+
+
+QUALITY_MAX_ERROR = 30     # % monthly error (leave-one-year-out) above which a tile's colours are withheld
+LOWQ_STYLE = ("#dcdbd3", "Correction not reliable here")
+
+
+def trusted_tiles(names):
+    """Tiles whose conversion factor was validated with an acceptable error, for the given regions."""
+    ok = set()
+    for r in names:
+        for t in val["regions"].get(r, {}).get("loyo", {}).get("tiles", []):
+            m = t.get(val["chosen_model"])
+            if m and m["mdape_pct"] is not None and m["mdape_pct"] <= QUALITY_MAX_ERROR:
+                ok.add((t["tile_lat"], t["tile_lon"]))
+    return ok
+
+
+def flag_low_quality(cells, names):
+    ok = trusted_tiles(names)
+    tl = np.floor(cells["lat_i"] * FINE / TILE) * TILE
+    to = np.floor(cells["lon_i"] * FINE / TILE) * TILE
+    return cells.assign(lowq=[(a, b) not in ok for a, b in zip(tl, to)])
 
 
 def area_shift(s):
@@ -361,29 +413,42 @@ Harmonized Fire Calendar. Text generated from computed numbers by fixed template
 </body></html>"""
 
 
+def squares_extent(cells, box):
+    """Zoom to where the judged squares are (2nd-98th percentile), so sparse corners of a large
+    region (e.g. Alaska and Hawaii for the USA) do not shrink the map. Never larger than the box."""
+    k = cells[cells["cls"].notna()]
+    if len(k) < 20:
+        return box
+    la, lo = k["lat_i"] * FINE, k["lon_i"] * FINE
+    return (max(box[0], la.quantile(0.02) - 1), min(box[1], la.quantile(0.98) + 1 + FINE),
+            max(box[2], lo.quantile(0.02) - 1), min(box[3], lo.quantile(0.98) + 1 + FINE))
+
+
 def unusual_map(cells, styles, box):
     """Light basemap, one small square per cell coloured by class, rectangle-only draw tool."""
-    centre, zoom = map_view(box)
+    centre, zoom = map_view(squares_extent(cells, box))
     esri = "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_{}/MapServer/tile/{{z}}/{{y}}/{{x}}"
     fmap = folium.Map(location=list(centre), zoom_start=zoom, tiles=None, control_scale=True, prefer_canvas=True)
     folium.TileLayer(esri.format("Base"), attr="Esri, HERE, Garmin, © OpenStreetMap contributors",
                      name="Light basemap", control=False).add_to(fmap)
     feats = []
     cells = cells[cells["cls"].notna()]
-    for lat_i, lon_i, cls, tip in cells[["lat_i", "lon_i", "cls", "tip"]].itertuples(index=False):
+    if "lowq" not in cells:
+        cells = cells.assign(lowq=False)
+    for lat_i, lon_i, cls, tip, lowq in cells[["lat_i", "lon_i", "cls", "tip", "lowq"]].itertuples(index=False):
         la, lo = round(lat_i * FINE, 4), round(lon_i * FINE, 4)
         la2, lo2 = round(la + FINE, 4), round(lo + FINE, 4)
-        known = cls == cls
+        known = True
         feats.append(dict(type="Feature", properties=dict(
-            fill=styles[int(cls)][0] if known else "#000000", known=bool(known),
-            tip=(styles[int(cls)][1] if known else NODATA_LABEL) + ". " + tip),
+            fill=LOWQ_STYLE[0] if lowq else styles[int(cls)][0], known=True,
+            tip=(LOWQ_STYLE[1] if lowq else styles[int(cls)][1]) + ". " + tip),
             geometry=dict(type="Polygon", coordinates=[[[lo, la], [lo2, la], [lo2, la2], [lo, la2], [lo, la]]])))
     if feats:
         folium.GeoJson(
             dict(type="FeatureCollection", features=feats),
-            style_function=lambda f: (dict(stroke=False, fillColor=f["properties"]["fill"], fillOpacity=0.85)
-                                      if f["properties"]["known"] else
-                                      dict(color="#77766f", weight=1, fillOpacity=0, dashArray="2 2")),
+            # a hairline stroke in the fill colour closes the sub-pixel gaps between squares at low zoom
+            style_function=lambda f: dict(color=f["properties"]["fill"], weight=0.6, opacity=0.9,
+                                          fillColor=f["properties"]["fill"], fillOpacity=0.9),
             tooltip=folium.GeoJsonTooltip(fields=["tip"], labels=False)).add_to(fmap)
     folium.TileLayer(esri.format("Reference"), attr="Esri", name="Place names", control=False,
                      overlay=True).add_to(fmap)
@@ -400,6 +465,9 @@ def legend_html(styles):
         f'<span style="display:inline-flex;align-items:center;margin:0 14px 4px 0;white-space:nowrap">'
         f'<span style="width:14px;height:14px;background:{c};display:inline-block;margin-right:6px"></span>'
         f'{label}</span>' for _, (c, label) in sorted(styles.items()))
+    sw += (f'<span style="display:inline-flex;align-items:center;white-space:nowrap">'
+           f'<span style="width:14px;height:14px;background:{LOWQ_STYLE[0]};border:1px solid #b5b4ad;'
+           f'display:inline-block;margin-right:6px"></span>{LOWQ_STYLE[1]}</span>')
     return f'<div style="font-size:0.9rem;color:{INK};line-height:1.9">{sw}</div>'
 
 
@@ -418,7 +486,7 @@ def _convert(g, box, prefer):
     return modis, v.groupby("month")["n"].sum(), v.groupby("month")["conv"].sum(), fallback_share
 
 
-@st.cache_data
+@cached
 def month_to_date(box, prefer=None):
     """Harmonized hotspots for the current month's day range (e.g. 1-15 Nov), per year."""
     modis, _, conv, _ = _convert(mtd_grid, box, prefer)
@@ -430,7 +498,7 @@ def month_to_date(box, prefer=None):
     return out
 
 
-@st.cache_data
+@cached
 def box_series(box, prefer=None):
     """Monthly MODIS / VIIRS / naive / harmonized counts for a lat-lon box."""
     modis, viirs, conv, fallback_share = _convert(grid, box, prefer)
@@ -547,7 +615,7 @@ def season_facts(s):
     return f
 
 
-@st.cache_data
+@cached
 def month_character(box):
     """Per calendar month: mean fire power per detection and night share (MODIS, whole record)."""
     a, b, c, d = box
@@ -635,17 +703,9 @@ def calendar_figure(sc, col, yr):
 
 
 # --------------------------------------------------------------- sidebar
-# A rectangle drawn on the map becomes the custom box (applied before the widgets are built).
-for _k, _v in (("lat0", 37.5), ("lat1", 39.0), ("lon0", 22.5), ("lon1", 24.5)):
-    st.session_state.setdefault(_k, _v)
-if "pending_box" in st.session_state:
-    _b = st.session_state.pop("pending_box")
-    st.session_state.update(region_choice="Custom box", lat0=_b[0], lat1=_b[1], lon0=_b[2], lon1=_b[3])
-
 st.sidebar.header("Area")
-presets = list(REGIONS)
-default = presets.index("Greece") if "Greece" in presets else 0
-choice = st.sidebar.selectbox("Region", presets + ["Custom box"], index=default, key="region_choice")
+presets = PRESETS
+choice = st.sidebar.selectbox("Region", presets + ["Custom box"], index=0, key="region_choice")
 if choice == "Custom box":
     with st.sidebar.expander("Box coordinates", expanded=True):
         c1, c2 = st.columns(2)
@@ -762,30 +822,37 @@ with tab1:
                     "with a normal season for that same square.")
         elif map_mode == "Season shift":
             styles = SHIFT_STYLE
-            cells = season_shift(prefer, vbox, mcol)
+            with st.spinner("Comparing fire seasons square by square (first time only)…"):
+                cells = season_shift(prefer, vbox, mcol)
             p1, p2 = (f"{a}–{b}" for a, b in SHIFT_PERIODS)
             what = (f"Each square (about {SQ_KM} km) compares when the fire season started and how long it lasted "
                     f"in {p2} against {p1}. A change is shown only if it is at least one month and unlikely to be "
                     "chance (about 1 square in 20 can still be flagged by chance).")
         return styles, cells, what
 
+    q_names = [prefer] if prefer else regions_for_box(box)
     styles, cells, what = build_cells(mcol)
+    if cells is not None:
+        cells = flag_low_quality(cells, q_names)
     if cells is None:
         st.info("Not enough data in this area for this view.")
         out_map = None
     else:
         st.markdown(legend_html(styles), unsafe_allow_html=True)
         out_map = st_folium(unusual_map(cells, styles, box), height=600, use_container_width=True,
-                            returned_objects=["last_active_drawing"], center=map_view(box)[0],
-                            zoom=map_view(box)[1], key=f"map_{choice}_{box}_{map_mode}_{raw_mode}")
-        known = cells[cells["cls"].notna()]
+                            returned_objects=["last_active_drawing"],
+                            center=map_view(squares_extent(cells, box))[0],
+                            zoom=map_view(squares_extent(cells, box))[1],
+                            key=f"map_{choice}_{box}_{map_mode}_{raw_mode}")
+        n_lowq = int((cells["cls"].notna() & cells["lowq"]).sum())
+        known = cells[cells["cls"].notna() & ~cells["lowq"]]
         n_skip = int(cells["cls"].isna().sum())
         shift = map_mode == "Season shift"
         hi_word, lo_word, mid_word = (
             ("show a longer or earlier season", "a shorter or later season", "no clear change") if shift else
             ("look more active than normal", "quieter than normal", "about normal"))
-        other = build_cells("harm" if raw_mode else "naive")[1]
-        other = other[other["cls"].notna()]
+        other = flag_low_quality(build_cells("harm" if raw_mode else "naive")[1], q_names)
+        other = other[other["cls"].notna() & ~other["lowq"]]
         if len(known):
             hi, lo = (known["cls"] > 0).mean(), (known["cls"] < 0).mean()
             summary = (f"Of {len(known):,} squares with enough history, **{hi:.0%} {hi_word}**, {lo:.0%} "
@@ -798,7 +865,10 @@ with tab1:
         else:
             summary = "No squares have enough history for this view."
         st.caption(f"{what} {summary} {n_skip:,} more squares had fire but too little history to judge "
-                   "and are not drawn (a normal level needs fire in at least half of the earlier years).")
+                   "and are not drawn (a normal level needs fire in at least half of the earlier years)."
+                   + (f" {n_lowq:,} squares are shown in pale grey because the satellite correction did not "
+                      f"test well enough there (monthly error above {QUALITY_MAX_ERROR}% or too little data)."
+                      if n_lowq else ""))
         if raw_mode:
             st.warning("You are looking at the uncorrected map: raw satellite counts, where a sharper "
                        "satellite since 2018 inflates recent years.")
@@ -862,7 +932,7 @@ with tab1:
     d1.download_button("Monthly fire activity (CSV)", out.to_csv().encode(),
                        f"harmonized_monthly_{slug}.csv", "text/csv")
     raw_files = glob.glob(os.path.join(RAW, "**", "*.csv"), recursive=True)
-    if raw_files:
+    if raw_files and AGG == "data/agg":
         @st.cache_data(show_spinner="Loading individual detections…")
         def raw_hotspots():
             import pipeline
@@ -1105,7 +1175,8 @@ calendar-month medians of the harmonized series.
 - The series is "Terra + Aqua equivalent" as observed in 2018–2025. Cloud cover, overpass times, satellite orbit drift and the larger night-time share of VIIRS detections are absorbed into the factor, not modelled.
 - In 2026 MODIS reports fewer hotspots relative to VIIRS than before (cause unverified), so 2026 is excluded from the factor fit.
 - Near-real-time data (from {cal['nrt_start']}) have no fire-type classification. Known static heat sources are masked at 0.01°, which removes most but not all non-vegetation detections.
-- Tested on California and Greece only. Regions mixing forest and cropland burning may need finer tiles.
+- Regions mixing forest and cropland burning may need finer tiles; tile errors are listed above and tiles that tested poorly are greyed out on the map.
+- Conflict-related fires in Ukraine since 2022 appear as anomalies; they are real detections, not wildfire or farm burning.
 """)
 
 st.caption(f"Data: NASA FIRMS (MODIS C6.1, VIIRS NOAA-20 C2). Last data day {cal['last_data_day']}. "

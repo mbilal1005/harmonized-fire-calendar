@@ -6,4 +6,3 @@ __pycache__/
 .DS_Store
 .streamlit/secrets.toml
 data/raw_big/
-data/agg_big/
