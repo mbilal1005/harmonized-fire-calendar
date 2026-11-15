@@ -17,6 +17,11 @@ RAW = "data/raw"
 C_HARM, C_NAIVE, C_MODIS = "#2a78d6", "#eb6834", "#199e70"   # validated colorblind-safe trio, >= 3:1 on white
 INK, MUTED, GRIDC = "#1f1f1e", "#6b6a63", "#e6e5df"
 MIN_ANOMALY_COUNT = 10
+# Known large fires, labelled on the main chart (month of peak hotspot activity).
+EVENTS = {
+    "Greece": [("2007-08", "Peloponnese 2007"), ("2023-08", "Evros 2023")],
+    "California": [("2020-08", "August Complex 2020"), ("2021-08", "Dixie 2021")],
+}
 MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
 st.set_page_config(page_title="Harmonized Fire Calendar", page_icon="🔥", layout="wide")
@@ -232,6 +237,49 @@ m3.metric("Naive splice overstates by", fmt_x(h["inflation"]),
 m4.metric(f"Actual MODIS change, {h['post']} vs {h['pre']}", fmt_x(h["mean"]["modis_post_x"]),
           help="Hotspots per year on average. See the table below for the median year.")
 
+# -------------------------------------------------------- season briefing
+def month_span(ms):
+    names = [MONTHS[m - 1] for m in ms]
+    contiguous = all(b - a == 1 for a, b in zip(ms, ms[1:]))
+    return names[0] if len(ms) == 1 else (f"{names[0]}–{names[-1]}" if contiguous else ", ".join(names))
+
+
+def season_briefing(s, h):
+    """Template text filled from computed numbers only."""
+    full = s[~s["is_partial"]]
+    medcal = full.groupby("cm")["harmonized"].median()
+    if medcal.max() <= 0:
+        return None
+    peak = [int(m) for m in medcal.index if medcal[m] >= 0.5 * medcal.max()]
+    share = medcal[peak].sum() / medcal.sum()
+    seas = full[full["cm"].isin(peak)].groupby("year")["harmonized"].agg(["sum", "count"])
+    seas = seas.loc[seas["count"] == len(peak), "sum"]
+    lines = [f"- **Peak months: {month_span(peak)}.** In a typical year they hold {share:.0%} of the year's "
+             "hotspots (months whose median is at least half the median of the busiest month)."]
+    if len(seas) >= 3:
+        ly, lv, hist = int(seas.index[-1]), float(seas.iloc[-1]), seas.iloc[:-1]
+        med = float(hist.median())
+        rank = int((seas > lv).sum()) + 1
+        rel = (f"{abs(100 * (lv / med - 1)):.0f}% {'above' if lv >= med else 'below'} the median season "
+               f"({med:,.0f}, {int(hist.index[0])}–{int(hist.index[-1])})") if med > 0 else "no median to compare"
+        nrt = full[(full["year"] == ly) & full["cm"].isin(peak)]["is_nrt"].any()
+        lines.append(f"- **Last complete season ({month_span(peak)} {ly}): {lv:,.0f} hotspots**, {rel}. "
+                     f"It ranks {rank} of {len(seas)} seasons."
+                     + (" Part of it is near-real-time data, which is less strictly filtered." if nrt else ""))
+    md = h["median"]
+    if np.isfinite(md["viirs_post_x"]):
+        lines.append(f"- **Trap to avoid:** comparing raw VIIRS counts with pre-2018 MODIS counts makes the "
+                     f"median year of {h['post']} look like {md['viirs_post_x']:.2f}× the {h['pre']} level. "
+                     f"Like for like it is {md['harm_post_x']:.2f}× (actual MODIS: {md['modis_post_x']:.2f}×).")
+    return "\n".join(lines)
+
+
+brief = season_briefing(s_all, h)
+if brief:
+    with st.container(border=True):
+        st.markdown(f"**Season briefing for {title_area}** · for planning seasonal staffing · "
+                    "harmonized (MODIS-equivalent) hotspots\n\n" + brief)
+
 # ------------------------------------------------- naive vs harmonized chart
 st.subheader(f"Naive splice vs harmonized vs actual MODIS — {title_area}")
 view = st.radio("View", ["Yearly totals", "Monthly"], horizontal=True, label_visibility="collapsed")
@@ -269,8 +317,18 @@ else:
 if yr[0] <= int(cal["overlap_start"][:4]) <= yr[1]:
     fig.add_vline(x=xline, line=dict(color=MUTED, width=1, dash="dot"))
     fig.add_annotation(x=xline, y=1, yref="paper", text="VIIRS NOAA-20 starts", showarrow=False,
-                       xanchor="left", xshift=6, font=dict(color=MUTED, size=12))
-base_layout(fig, 400, yaxis_title="Hotspots")
+                       xanchor="right", xshift=-6, font=dict(color=MUTED, size=12))
+for k, (ev_month, ev_label) in enumerate(EVENTS.get(prefer, [])):
+    ev_x = int(ev_month[:4]) if view == "Yearly totals" else ev_month
+    if ev_x not in table.index:
+        continue
+    ev_y = float(table.loc[ev_x, ["naive", "harmonized", "modis"]].max())
+    fig.add_annotation(x=ev_x if view == "Yearly totals" else pd.Timestamp(ev_month + "-01"), y=ev_y,
+                       text=ev_label, showarrow=True, arrowhead=0, arrowwidth=1, arrowcolor=MUTED,
+                       ax=-45 if k % 2 == 0 else 45, ay=-28, font=dict(color=INK, size=12),
+                       bgcolor="rgba(255,255,255,0.85)")
+base_layout(fig, 420, yaxis_title="Hotspots")
+fig.update_layout(margin=dict(t=60))
 st.plotly_chart(fig, width="stretch")
 st.caption("Before April 2018 all three lines are the same MODIS record. Yearly totals show complete "
            "years only. The gap between the dashed and solid lines is the sensor change, not fire.")
