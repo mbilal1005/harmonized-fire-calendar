@@ -112,6 +112,7 @@ SHIFT_STYLE = {
     -2: ("#1c5cab", "Season got shorter"),
 }
 NODATA_LABEL = "Not enough data"
+SQ_KM = round(FINE * 111 / 5) * 5      # rough square size in km for captions
 SHIFT_PERIODS = ((2001, 2012), (2013, 2025))
 SHIFT_MIN_TOTAL, SHIFT_MIN_YEARS = 20, 4
 
@@ -245,6 +246,7 @@ def unusual_map(cells, styles, box):
     folium.TileLayer(esri.format("Base"), attr="Esri, HERE, Garmin, © OpenStreetMap contributors",
                      name="Light basemap", control=False).add_to(fmap)
     feats = []
+    cells = cells[cells["cls"].notna()]
     for lat_i, lon_i, cls, tip in cells[["lat_i", "lon_i", "cls", "tip"]].itertuples(index=False):
         la, lo = round(lat_i * FINE, 4), round(lon_i * FINE, 4)
         la2, lo2 = round(la + FINE, 4), round(lo + FINE, 4)
@@ -262,8 +264,8 @@ def unusual_map(cells, styles, box):
             tooltip=folium.GeoJsonTooltip(fields=["tip"], labels=False)).add_to(fmap)
     folium.TileLayer(esri.format("Reference"), attr="Esri", name="Place names", control=False,
                      overlay=True).add_to(fmap)
-    folium.Rectangle([[box[0], box[2]], [box[1], box[3]]], color="#1f1f1e", weight=2, fill=False,
-                     tooltip="Selected area").add_to(fmap)
+    folium.Rectangle([[box[0], box[2]], [box[1], box[3]]], color="#b5b4ad", weight=1, fill=False,
+                     interactive=False).add_to(fmap)
     Draw(draw_options=dict(polyline=False, polygon=False, circle=False, marker=False, circlemarker=False,
                            rectangle=dict(shapeOptions=dict(color="#1f1f1e", weight=2))),
          edit_options=dict(edit=False, remove=False)).add_to(fmap)
@@ -275,9 +277,6 @@ def legend_html(styles):
         f'<span style="display:inline-flex;align-items:center;margin:0 14px 4px 0;white-space:nowrap">'
         f'<span style="width:14px;height:14px;background:{c};display:inline-block;margin-right:6px"></span>'
         f'{label}</span>' for _, (c, label) in sorted(styles.items()))
-    sw += ('<span style="display:inline-flex;align-items:center;white-space:nowrap">'
-           '<span style="width:12px;height:12px;border:1.5px dashed #77766f;display:inline-block;'
-           f'margin-right:6px"></span>{NODATA_LABEL}</span>')
     return f'<div style="font-size:0.9rem;color:{INK};line-height:1.9">{sw}</div>'
 
 
@@ -620,7 +619,7 @@ with tab1:
             wide = t.pivot_table(index=["lat_i", "lon_i"], columns="year", values=mcol, aggfunc="sum", fill_value=0.0)
             wide = wide.reindex(columns=range(int(cal["first_month"][:4]) + 1, day.year + 1), fill_value=0.0)
             cells = classify_vs_normal(wide, day.year, f"{rng_days} {day.year}")
-            what = (f"Each small square (about 10 km) compares fire activity in {rng_days} {day.year} with the "
+            what = (f"Each square (about {SQ_KM} km) compares fire activity in {rng_days} {day.year} with the "
                     f"same days in earlier years.")
         elif map_mode == "Last full season" and facts and facts["last"]:
             t = fine_table(prefer, vbox, "monthly")
@@ -629,13 +628,13 @@ with tab1:
             wide = t.pivot_table(index=["lat_i", "lon_i"], columns="season", values=mcol, aggfunc="sum",
                                  fill_value=0.0).reindex(columns=facts["seasons"], fill_value=0.0)
             cells = classify_vs_normal(wide, facts["last"]["year"], facts["last"]["label"])
-            what = (f"Each small square (about 10 km) compares the last full fire season ({facts['last']['label']}) "
+            what = (f"Each square (about {SQ_KM} km) compares the last full fire season ({facts['last']['label']}) "
                     "with a normal season for that same square.")
         elif map_mode == "Season shift":
             styles = SHIFT_STYLE
             cells = season_shift(prefer, vbox, mcol)
             p1, p2 = (f"{a}–{b}" for a, b in SHIFT_PERIODS)
-            what = (f"Each small square (about 10 km) compares when the fire season started and how long it lasted "
+            what = (f"Each square (about {SQ_KM} km) compares when the fire season started and how long it lasted "
                     f"in {p2} against {p1}. A change is shown only if it is at least one month and unlikely to be "
                     "chance (about 1 square in 20 can still be flagged by chance).")
         return styles, cells, what
@@ -650,29 +649,29 @@ with tab1:
                             returned_objects=["last_active_drawing"], center=map_view(box)[0],
                             zoom=map_view(box)[1], key=f"map_{choice}_{box}_{map_mode}_{raw_mode}")
         known = cells[cells["cls"].notna()]
+        n_skip = int(cells["cls"].isna().sum())
+        shift = map_mode == "Season shift"
+        hi_word, lo_word, mid_word = (
+            ("show a longer or earlier season", "a shorter or later season", "no clear change") if shift else
+            ("look more active than normal", "quieter than normal", "about normal"))
+        other = build_cells("harm" if raw_mode else "naive")[1]
+        other = other[other["cls"].notna()]
         if len(known):
             hi, lo = (known["cls"] > 0).mean(), (known["cls"] < 0).mean()
-            hi_word, lo_word = (("with a longer or earlier season", "with a shorter or later season")
-                                if map_mode == "Season shift" else ("more active than normal", "quieter than normal"))
-            summary = (f"Of {len(known):,} squares with enough history: **{hi:.0%} {hi_word}**, "
-                       f"{lo:.0%} {lo_word}, {1 - hi - lo:.0%} "
-                       f"{'no clear change' if map_mode == 'Season shift' else 'about normal'}.")
+            summary = (f"Of {len(known):,} squares with enough history, **{hi:.0%} {hi_word}**, {lo:.0%} "
+                       f"{lo_word} and {1 - hi - lo:.0%} {mid_word}.")
+            if len(other):
+                o_hi = (other["cls"] > 0).mean()
+                r_hi, c_hi = (hi, o_hi) if raw_mode else (o_hi, hi)
+                summary += (f" **Without correction {r_hi:.0%} of squares {hi_word}; corrected "
+                            f"{c_hi:.0%}.**")
         else:
             summary = "No squares have enough history for this view."
-        st.caption(what + " " + summary + " Dashed squares had fire but too little history to judge "
-                   "(for a normal level: fire in at least half of the earlier years).")
+        st.caption(f"{what} {summary} {n_skip:,} more squares had fire but too little history to judge "
+                   "and are not drawn (a normal level needs fire in at least half of the earlier years).")
         if raw_mode:
-            fixed = build_cells("harm")[1]
-            fixed = fixed[fixed["cls"].notna()]
-            if len(known) and len(fixed):
-                r_hi, f_hi = (known["cls"] > 0).mean(), (fixed["cls"] > 0).mean()
-                nums = (f"{r_hi:.0%} of squares are flagged here ({hi_word}), against {f_hi:.0%} once the "
-                        "satellites are made comparable.")
-                if r_hi >= 1.5 * f_hi and r_hi - f_hi >= 0.05:
-                    st.warning("**Without correction, a sharper satellite makes far more places look "
-                               "unusual:** " + nums)
-                else:
-                    st.info("In this view the correction changes little: " + nums)
+            st.warning("You are looking at the uncorrected map: raw satellite counts, where a sharper "
+                       "satellite since 2018 inflates recent years.")
         st.caption("**To check a smaller area, use the square tool on the left of the map and draw a "
                    "rectangle.** Everything on this page then updates to that area. You can also type "
                    "coordinates in the sidebar.")

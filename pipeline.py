@@ -17,11 +17,16 @@ import sys
 import numpy as np
 import pandas as pd
 
-RAW_DIR = "data/raw"
-AGG_DIR = "data/agg"
+# Overridable so a larger run (e.g. USA + Europe) can be built next to the committed aggregates:
+#   FIRE_RAW_DIRS=data/raw:data/raw_big FIRE_AGG_DIR=data/agg_big FIRE_REGIONS=regions_big.json python pipeline.py all
+RAW_DIRS = os.environ.get("FIRE_RAW_DIRS", "data/raw").split(":")
+AGG_DIR = os.environ.get("FIRE_AGG_DIR", "data/agg")
+REGIONS_FILE = os.environ.get("FIRE_REGIONS", "regions.json")
+USECOLS = ["latitude", "longitude", "acq_date", "acq_time", "satellite", "instrument", "confidence",
+           "frp", "daynight", "type"]
 GRID = 0.5            # deg, aggregation cell
 TILE = 5.0            # deg, conversion-factor tile
-FINE = 0.1            # deg, display-only grid for the map (factors stay per 5 deg tile)
+FINE = 0.25           # deg, display-only grid for the map (factors stay per 5 deg tile)
 OVERLAP_START = "2018-04"
 MIN_CALMONTH_MODIS = 50    # min MODIS hotspots for a tile x calendar-month factor
 MIN_TILE_MODIS = 200       # min MODIS hotspots in overlap for a tile's own factor
@@ -30,7 +35,7 @@ MASK_DEG = 0.01            # NRT static-source mask resolution
 FIT_END_CAP = "2025-12"    # factors are fitted up to here; later archive months are the
                            # "MODIS drift check" (MODIS detects fewer hotspots in 2026)
 
-with open("regions.json") as fh:
+with open(REGIONS_FILE) as fh:
     REGIONS = {k: tuple(v) for k, v in json.load(fh).items()}
 
 DEDUP_KEYS = ["latitude", "longitude", "acq_date", "acq_time", "satellite"]
@@ -66,8 +71,13 @@ def load_raw():
     Returns (hotspots, per-file stats, NRT mask report).
     """
     frames, stats, static = [], [], []
-    for path in sorted(glob.glob(os.path.join(RAW_DIR, "**", "*.csv"), recursive=True)):
-        df = pd.read_csv(path, dtype={"confidence": str, "acq_time": str})
+    paths = sorted(p for d in RAW_DIRS for p in glob.glob(os.path.join(d, "**", "*.csv"), recursive=True))
+    for path in paths:
+        # pyarrow reader, needed columns only (large regions are several hundred MB per file)
+        cols = [c for c in pd.read_csv(path, nrows=0).columns if c in USECOLS]
+        df = pd.read_csv(path, engine="pyarrow", usecols=cols,
+                         dtype={"confidence": str, "acq_time": str})
+        df["acq_date"] = df["acq_date"].astype(str)
         sensor = detect_sensor(df, path)
         has_type = "type" in df.columns
         df["sensor"] = sensor
