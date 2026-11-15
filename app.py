@@ -238,34 +238,45 @@ m4.metric(f"Actual MODIS change, {h['post']} vs {h['pre']}", fmt_x(h["mean"]["mo
           help="Hotspots per year on average. See the table below for the median year.")
 
 # -------------------------------------------------------- season briefing
-def month_span(ms):
-    names = [MONTHS[m - 1] for m in ms]
-    contiguous = all(b - a == 1 for a, b in zip(ms, ms[1:]))
-    return names[0] if len(ms) == 1 else (f"{names[0]}–{names[-1]}" if contiguous else ", ".join(names))
+def peak_run(medcal, cover=0.75):
+    """Shortest run of consecutive months (may wrap across December) holding >= cover
+    of the typical year (sum of calendar-month medians). Ties: the run with the larger share."""
+    v = np.array([float(medcal.get(m, 0.0)) for m in range(1, 13)])
+    for length in range(1, 13):
+        shares = [(v[[(st0 + k) % 12 for k in range(length)]].sum() / v.sum(), st0) for st0 in range(12)]
+        best, st0 = max(shares)
+        if best >= cover:
+            return [(st0 + k) % 12 + 1 for k in range(length)], best
 
 
 def season_briefing(s, h):
     """Template text filled from computed numbers only."""
     full = s[~s["is_partial"]]
     medcal = full.groupby("cm")["harmonized"].median()
-    if medcal.max() <= 0:
+    if medcal.sum() <= 0:
         return None
-    peak = [int(m) for m in medcal.index if medcal[m] >= 0.5 * medcal.max()]
-    share = medcal[peak].sum() / medcal.sum()
-    seas = full[full["cm"].isin(peak)].groupby("year")["harmonized"].agg(["sum", "count"])
-    seas = seas.loc[seas["count"] == len(peak), "sum"]
-    lines = [f"- **Peak months: {month_span(peak)}.** In a typical year they hold {share:.0%} of the year's "
-             "hotspots (months whose median is at least half the median of the busiest month)."]
+    peak, share = peak_run(medcal)
+    span = MONTHS[peak[0] - 1] if len(peak) == 1 else f"{MONTHS[peak[0] - 1]}–{MONTHS[peak[-1] - 1]}"
+    wraps = peak[-1] < peak[0]
+    f = full[full["cm"].isin(peak)].copy()
+    # a season that wraps across December belongs to the year it starts in
+    f["season"] = np.where(wraps & (f["cm"] < peak[0]), f["year"] - 1, f["year"])
+    g = f.groupby("season")
+    seas = g["harmonized"].sum()[g.size() == len(peak)]
+    lines = [f"- **Peak months: {span}.** In a typical year they hold {share:.0%} of the year's hotspots "
+             "(the shortest run of consecutive months covering at least 75% of the calendar-month medians)."]
     if len(seas) >= 3:
         ly, lv, hist = int(seas.index[-1]), float(seas.iloc[-1]), seas.iloc[:-1]
         med = float(hist.median())
         rank = int((seas > lv).sum()) + 1
         rel = (f"{abs(100 * (lv / med - 1)):.0f}% {'above' if lv >= med else 'below'} the median season "
                f"({med:,.0f}, {int(hist.index[0])}–{int(hist.index[-1])})") if med > 0 else "no median to compare"
-        nrt = full[(full["year"] == ly) & full["cm"].isin(peak)]["is_nrt"].any()
-        lines.append(f"- **Last complete season ({month_span(peak)} {ly}): {lv:,.0f} hotspots**, {rel}. "
+        last = f[f["season"] == ly]
+        caveat = bool(last["is_nrt"].any() or (last.index > cal["fit_end"]).any())
+        label = f"{span} {ly}" if not wraps else f"{MONTHS[peak[0] - 1]} {ly}–{MONTHS[peak[-1] - 1]} {ly + 1}"
+        lines.append(f"- **Last complete season ({label}): {lv:,.0f} hotspots**, {rel}. "
                      f"It ranks {rank} of {len(seas)} seasons."
-                     + (" Part of it is near-real-time data, which is less strictly filtered." if nrt else ""))
+                     + (" (includes near-real-time data; see 2026 note)" if caveat else ""))
     md = h["median"]
     if np.isfinite(md["viirs_post_x"]):
         lines.append(f"- **Trap to avoid:** comparing raw VIIRS counts with pre-2018 MODIS counts makes the "
