@@ -266,14 +266,26 @@ st.caption(f"Baseline: MODIS {h['pre']}, {h['mean']['modis_pre']:,.0f} hotspots 
            "fire years; the median year is not. These windows are fixed and ignore the year slider.")
 
 drift = val.get("modis_drift_check", {}).get("regions", {})
-dtxt = "; ".join(f"{r}: actual MODIS {d['modis_below_prediction_pct']:.0f}% below the harmonized prediction "
-                 f"({d['period'].replace('..', ' to ')})" for r, d in drift.items() if r in used_regions)
-if dtxt:
-    st.warning("**2026 values: read with care.** In 2026 MODIS reports fewer hotspots relative to VIIRS than "
-               f"in 2018–2025 ({dtxt}). The cause is unverified (MODIS is near end of life). Conversion "
-               "factors are fitted on 2018–2025 only, so harmonized 2026 values show what MODIS would have "
-               "reported at its 2018–2025 behaviour. Data from "
-               f"{cal['nrt_start']} on are near-real-time and less strictly filtered.")
+for r, d in drift.items():
+    if r not in used_regions:
+        continue
+    gap = d["modis_below_prediction_pct"]
+    worst = val["regions"][r]["loyo"]["region"][val["chosen_model"]]["annual_abs_err_max_pct"]
+    period = d["period"].replace("..", " to ")
+    tail = (" Conversion factors are fitted on 2018–2025 only, so harmonized 2026 values show what MODIS "
+            "would have reported at its 2018–2025 behaviour. Data from "
+            f"{cal['nrt_start']} on are near-real-time and less strictly filtered.")
+    if gap > worst:
+        st.warning(f"**2026 values in {r}: MODIS is reporting fewer hotspots than expected.** For {period}, "
+                   f"actual MODIS ({d['modis_actual']:,} hotspots) is {gap:.0f}% below the harmonized "
+                   f"prediction. That is well outside the normal error: the largest annual error in any "
+                   f"held-out year 2018–2025 is {worst:.0f}%. The cause is unverified (MODIS is near end "
+                   "of life)." + tail)
+    elif gap > 0:
+        st.info(f"**2026 values in {r}: possible MODIS shortfall, not conclusive.** For {period}, actual "
+                f"MODIS ({d['modis_actual']:,} hotspots) is {gap:.0f}% below the harmonized prediction, but "
+                f"that is within this region's normal year-to-year error (up to {worst:.0f}% in held-out "
+                "years 2018–2025) and rests on few hotspots." + tail)
 
 # ------------------------------------------------------------- calendar
 st.subheader("Burning-activity calendar")
