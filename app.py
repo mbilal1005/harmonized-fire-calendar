@@ -192,7 +192,7 @@ def delta_vs(v, med):
     return f"{100 * (v / med - 1):+.0f}% vs median {med:,.0f}" if med > 0 else f"median {med:,.0f}"
 
 
-m1, m2, m3, m4 = st.columns(4)
+m3, m4, m1, m2 = st.columns(4)   # story first: headline metrics, then current month
 day = pd.Timestamp(cal["last_data_day"])
 m1.metric(f"{MONTHS[int(cur['cm'])-1]} {int(cur['year'])} (partial, to {day.day} {MONTHS[day.month-1]})",
           f"{cur['harmonized']:,.0f}", delta_vs(cur["harmonized"], hist.median()), delta_color="inverse",
