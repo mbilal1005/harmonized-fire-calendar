@@ -758,17 +758,26 @@ h = headline_numbers(s_all)
 base_facts = season_facts(s_all)
 facts = base_facts
 day = pd.Timestamp(cal["last_data_day"])
+# The tabs report which one is open, so the sidebar shows only the control that tab uses.
+# A hidden control keeps its last value in session state.
+tab1, tab2 = st.tabs(["Fire season check", "Method & validation"], key="tab", on_change="rerun")
+kept = st.session_state.setdefault("kept_controls", {})
 if base_facts and base_facts.get("seasons") and base_facts["last"]:
     seasons = base_facts["seasons"]
-    season_year = st.sidebar.selectbox(
-        "Season year", seasons, index=len(seasons) - 1, key=f"season_year_{choice}_{box}",
-        help="Used in the 'Fire season check' tab. The season to check, compared with the normal season "
-             "from all the other years. It sets the season numbers and the 'Selected season' map.")
+    skey = f"season_year_{choice}_{box}"
+    season_year = kept.get(skey, seasons[-1])
+    if tab1.open:
+        season_year = st.sidebar.selectbox(
+            "Season year", seasons, index=seasons.index(season_year), key=skey,
+            help="The season to check, compared with the normal season from all the other years. "
+                 "It sets the season numbers and the 'Selected season' map.")
+        kept[skey] = season_year
     facts = season_facts(s_all, season_year)
-yr = st.sidebar.slider(
-    "Years in the method charts", y_min, y_max, (y_min, y_max),
-    help="Used in the 'Method & validation' tab: the years shown in its chart and calendar.")
-tab1, tab2 = st.tabs(["Fire season check", "Method & validation"])
+yr = kept.get("years", (y_min, y_max))
+if tab2.open:
+    yr = st.sidebar.slider("Years shown", y_min, y_max, yr, key="years_shown",
+                           help="The years shown in the chart and calendar of this tab.")
+    kept["years"] = yr
 
 # =================================================== TAB 1: fire season check
 with tab1:
