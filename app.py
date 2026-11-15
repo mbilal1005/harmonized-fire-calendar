@@ -26,15 +26,16 @@ st.set_page_config(page_title="Harmonized Fire Calendar", page_icon="🔥", layo
 @st.cache_data
 def load_agg():
     grid = pd.read_parquet(os.path.join(AGG, "grid_monthly.parquet"))
+    mtd = pd.read_parquet(os.path.join(AGG, "mtd_monthly.parquet"))
     factors = pd.read_parquet(os.path.join(AGG, "factors.parquet"))
     out = {}
     for name in ("meta", "validation", "headline"):
         with open(os.path.join(AGG, f"{name}.json")) as fh:
             out[name] = json.load(fh)
-    return grid, factors, out["meta"], out["validation"], out["headline"]
+    return grid, mtd, factors, out["meta"], out["validation"], out["headline"]
 
 
-grid, factors, meta, val, head = load_agg()
+grid, mtd_grid, factors, meta, val, head = load_agg()
 cal = meta["calendar"]
 REGIONS = {k: tuple(v) for k, v in meta["regions"].items()}
 GRID, TILE = meta["grid_deg"], meta["tile_deg"]
@@ -49,17 +50,16 @@ def regions_for_box(box):
     return [n for n, (ra, rb, rc, rd) in REGIONS.items() if a < rb and b > ra and c < rd and d > rc]
 
 
-@st.cache_data
-def box_series(box, prefer=None):
-    """Monthly MODIS / VIIRS / naive / harmonized counts for a lat-lon box.
+def _convert(g, box, prefer):
+    """Per-month MODIS, VIIRS and converted-VIIRS sums of a cell table inside a box.
 
     Each VIIRS cell-month is converted with the factor of its 5 deg tile from the
     preset region that contains the cell; cells outside every preset region use
     the pooled factor over all regions.
     """
     a, b, c, d = box
-    clat, clon = grid["cell_lat"] + GRID / 2, grid["cell_lon"] + GRID / 2
-    g = grid[clat.between(a, b) & clon.between(c, d)]
+    clat, clon = g["cell_lat"] + GRID / 2, g["cell_lon"] + GRID / 2
+    g = g[clat.between(a, b) & clon.between(c, d)]
     modis = g[g["sensor"] == "MODIS"].groupby("month")["n"].sum()
     v = g[g["sensor"] == "VIIRS"].copy()
     v["clat"], v["clon"] = v["cell_lat"] + GRID / 2, v["cell_lon"] + GRID / 2
@@ -77,12 +77,30 @@ def box_series(box, prefer=None):
             v.loc[m, "factor"] = got["factor"].to_numpy()
     fallback = v["factor"].isna()
     fallback_share = float(v.loc[fallback, "n"].sum() / v["n"].sum()) if v["n"].sum() else 0.0
-    v["factor"] = v["factor"].fillna(GLOBAL_POOLED)
-    v["conv"] = v["n"] * v["factor"]
+    v["conv"] = v["n"] * v["factor"].fillna(GLOBAL_POOLED)
+    return modis, v.groupby("month")["n"].sum(), v.groupby("month")["conv"].sum(), fallback_share
+
+
+@st.cache_data
+def month_to_date(box, prefer=None):
+    """Harmonized hotspots for the current month's day range (e.g. 1-15 Nov), per year."""
+    modis, _, conv, _ = _convert(mtd_grid, box, prefer)
+    cm = cal["last_month"][5:]
+    idx = [f"{y}-{cm}" for y in range(int(cal["first_month"][:4]), int(cal["last_month"][:4]) + 1)]
+    idx = [m for m in idx if m >= cal["first_month"]]
+    out = pd.Series([float(conv.get(m, 0.0)) if m >= cal["overlap_start"] else float(modis.get(m, 0))
+                     for m in idx], index=idx)
+    return out
+
+
+@st.cache_data
+def box_series(box, prefer=None):
+    """Monthly MODIS / VIIRS / naive / harmonized counts for a lat-lon box."""
+    modis, viirs, conv, fallback_share = _convert(grid, box, prefer)
     s = pd.DataFrame(index=pd.Index(ALL_MONTHS, name="month"))
     s["modis"] = modis.reindex(s.index).fillna(0)
-    s["viirs"] = v.groupby("month")["n"].sum().reindex(s.index).fillna(0)
-    conv = v.groupby("month")["conv"].sum().reindex(s.index).fillna(0)
+    s["viirs"] = viirs.reindex(s.index).fillna(0)
+    conv = conv.reindex(s.index).fillna(0)
     ov = s.index >= cal["overlap_start"]
     s["naive"] = np.where(ov, s["viirs"], s["modis"])
     s["harmonized"] = np.where(ov, conv, s["modis"])
@@ -183,7 +201,8 @@ if not prefer and fallback_share > 0:
 h = headline_numbers(s_all)
 cur = s_all.iloc[-1]
 cur_month = s_all.index[-1]
-hist = s_all[(s_all["cm"] == cur["cm"]) & (s_all.index < cur_month)]["harmonized"]
+mtd = month_to_date(box, prefer)          # same day range in every year
+cur_mtd, hist = mtd.iloc[-1], mtd.iloc[:-1]
 lastfull = s_all.loc[cal["latest_full_month"]]
 hist_full = s_all[(s_all["cm"] == lastfull["cm"]) & (s_all.index < cal["latest_full_month"])]["harmonized"]
 
@@ -194,10 +213,11 @@ def delta_vs(v, med):
 
 m3, m4, m1, m2 = st.columns(4)   # story first: headline metrics, then current month
 day = pd.Timestamp(cal["last_data_day"])
-m1.metric(f"{MONTHS[int(cur['cm'])-1]} {int(cur['year'])} (partial, to {day.day} {MONTHS[day.month-1]})",
-          f"{cur['harmonized']:,.0f}", delta_vs(cur["harmonized"], hist.median()), delta_color="inverse",
-          help="Harmonized (MODIS-equivalent) hotspots so far this month, against the median of full "
-               "months of the same calendar month in earlier years. The month is incomplete.")
+rng = f"1–{day.day} {MONTHS[day.month-1]}"
+m1.metric(f"{rng} {int(cur['year'])} (month so far)",
+          f"{cur_mtd:,.0f}", delta_vs(cur_mtd, hist.median()), delta_color="inverse",
+          help=f"Harmonized (MODIS-equivalent) hotspots for {rng}, against the median of the same days "
+               f"({rng}) in {hist.index[0][:4]}–{hist.index[-1][:4]}. The latest day may be incomplete.")
 m2.metric(f"{MONTHS[int(lastfull['cm'])-1]} {int(lastfull['year'])} (last full month)",
           f"{lastfull['harmonized']:,.0f}", delta_vs(lastfull["harmonized"], hist_full.median()),
           delta_color="inverse", help="Harmonized hotspots against the median for that calendar month.")

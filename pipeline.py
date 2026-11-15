@@ -173,6 +173,11 @@ def step_agg():
     os.makedirs(AGG_DIR, exist_ok=True)
     path = os.path.join(AGG_DIR, "grid_monthly.parquet")
     grid.to_parquet(path, index=False, compression="zstd")
+    # month-to-date counts: the same day range as the current (partial) month, for every year,
+    # so the app can compare e.g. 1-15 Nov with 1-15 Nov of earlier years
+    last = hs["acq_date"].max()
+    mtd = aggregate(hs[(hs["acq_date"].dt.month == last.month) & (hs["acq_date"].dt.day <= last.day)])
+    mtd.to_parquet(os.path.join(AGG_DIR, "mtd_monthly.parquet"), index=False, compression="zstd")
     none = (region_of(grid["cell_lat"] + GRID / 2, grid["cell_lon"] + GRID / 2) == "(none)")
     print(f"\ngrid_monthly.parquet: {len(grid)} rows, {os.path.getsize(path)/1e3:.0f} kB, "
           f"{grid[['cell_lat','cell_lon']].drop_duplicates().shape[0]} cells; "
