@@ -238,6 +238,129 @@ def season_shift(prefer, vbox, col):
     return pd.concat([out, nod], ignore_index=True)
 
 
+def area_shift(s):
+    """Season start and length for the whole area in the two periods, with the same chance test
+    as the map (reshuffling years between the periods)."""
+    (a1, b1), (a2, b2) = SHIFT_PERIODS
+    years = np.arange(a1, b2 + 1)
+    d = s[~s["is_partial"] & s["year"].between(a1, b2)]
+    Y = d.pivot_table(index="year", columns="cm", values="harmonized", aggfunc="sum", fill_value=0.0) \
+        .reindex(index=years, columns=range(1, 13), fill_value=0.0).to_numpy()
+    n1 = b1 - a1 + 1
+    if Y[:n1].sum() < SHIFT_MIN_TOTAL or Y[n1:].sum() < SHIFT_MIN_TOTAL:
+        return None
+    (s1,), (l1,) = _runs(Y[:n1].sum(axis=0, keepdims=True))
+    (s2,), (l2,) = _runs(Y[n1:].sum(axis=0, keepdims=True))
+    dlen, dstart = int(l2 - l1), int(((s2 - s1 + 6) % 12) - 6)
+    rng = np.random.default_rng(0)
+    perms = np.array([rng.permutation(len(years)) for _ in range(SHIFT_PERMS)])
+    A, B = Y[perms[:, :n1]].sum(axis=1), Y[perms[:, n1:]].sum(axis=1)
+    sa, la = _runs(A)
+    sb, lb = _runs(B)
+    p_len = float((np.abs(lb - la) >= abs(dlen)).mean())
+    p_start = float((np.abs(((sb - sa + 6) % 12) - 6) >= abs(dstart)).mean())
+    span = lambda st, ln: MONTHS_LONG[st - 1] if ln == 1 else f"{MONTHS_LONG[st - 1]} to {MONTHS_LONG[(st + ln - 2) % 12]}"
+    clear_len, clear_start = abs(dlen) >= 1 and p_len < SHIFT_ALPHA, abs(dstart) >= 1 and p_start < SHIFT_ALPHA
+    if clear_len:
+        verdict = f"The season is {abs(dlen)} month{'s' if abs(dlen) > 1 else ''} {'longer' if dlen > 0 else 'shorter'}."
+    elif clear_start:
+        verdict = f"The season starts {abs(dstart)} month{'s' if abs(dstart) > 1 else ''} {'earlier' if dstart < 0 else 'later'}."
+    else:
+        verdict = "No clear change: any difference is within what chance alone produces."
+    return dict(p1=f"{a1}–{b1}", p2=f"{a2}–{b2}", w1=span(s1, l1), w2=span(s2, l2), verdict=verdict)
+
+
+def area_quality(box, used_regions):
+    """Validation error (leave-one-year-out, model used) of the 5 deg tiles that overlap the area."""
+    vals, n_tiles = [], 0
+    for r in used_regions:
+        for t in val["regions"].get(r, {}).get("loyo", {}).get("tiles", []):
+            if (t["tile_lat"] < box[1] and t["tile_lat"] + TILE > box[0]
+                    and t["tile_lon"] < box[3] and t["tile_lon"] + TILE > box[2]):
+                n_tiles += 1
+                if val["chosen_model"] in t:
+                    vals.append(t[val["chosen_model"]]["mdape_pct"])
+    if not vals:
+        return ("This area has not been checked against the reference satellite, so treat the numbers "
+                "as indicative only.")
+    rng_txt = f"{min(vals):.0f}%" if len(vals) == 1 else f"{min(vals):.0f}% to {max(vals):.0f}%"
+    whole = ""
+    if len(used_regions) == 1 and box == REGIONS.get(used_regions[0]):
+        x = val["regions"][used_regions[0]]["loyo"]["region"][val["chosen_model"]]
+        whole = (f"For the region as a whole, monthly numbers were typically within {x['mdape_pct']:.0f}% of the "
+                 f"reference satellite and yearly totals within {x['annual_abs_err_median_pct']:.0f}%, in tests "
+                 "on years held back. ")
+    return (whole + f"For the map tiles covering this area the typical monthly error was {rng_txt} "
+            f"({len(vals)} of {n_tiles} tiles had enough data to test). Whole-season totals are more reliable "
+            "than single months.")
+
+
+def fire_profile_html(area, facts, s, mtd, shift, type_note, quality, h):
+    """Self-contained one-page HTML summary in plain language (template text, computed numbers only)."""
+    full = s[~s["is_partial"]]
+    medcal = full.groupby("cm")["harmonized"].median().reindex(range(1, 13), fill_value=0.0)
+    top = max(float(medcal.max()), 1.0)
+    peak = set(facts["peak"]) if facts else set()
+    bars = "".join(
+        f'<div class="b"><div class="v">{medcal[m]:,.0f}</div>'
+        f'<div class="bar{" pk" if m in peak else ""}" style="height:{max(2, 90 * medcal[m] / top):.0f}px"></div>'
+        f'<div class="m">{MONTHS[m - 1]}</div></div>' for m in range(1, 13))
+    rows = []
+    if facts:
+        rows.append(("Fire season", f"<b>{facts['span_long']}</b>. These months hold {facts['share']:.0%} of a "
+                     f"normal year's fire activity. Busiest month: {MONTHS_LONG[facts['busiest'] - 1]}."))
+        if facts["last"]:
+            L = facts["last"]
+            rows.append(("Normal level", f"<b>{L['normal']:,.0f} fire detections</b> in a normal season "
+                         f"(middle value of the {L['hist']} seasons)."))
+            rows.append(("Last full season", f"{L['label']}: <b>{L['value']:,.0f} fire detections, "
+                         f"{vs_normal(L['value'], L['normal'])}</b>. It was the {ordinal(L['rank'])} busiest of "
+                         f"{L['n']} seasons." + (" Includes preliminary recent data." if L["caveat"] else "")))
+    if shift:
+        rows.append(("Has the season moved?", f"{shift['p1']}: {shift['w1']}. {shift['p2']}: {shift['w2']}. "
+                     f"<b>{shift['verdict']}</b>"))
+    cur, hist = float(mtd.iloc[-1]), mtd.iloc[:-1]
+    rng = f"1–{day.day} {MONTHS_LONG[day.month - 1]} {day.year}"
+    rows.append(("This month so far", f"{rng}: <b>{cur:,.0f} fire detections, "
+                 f"{vs_normal(cur, float(hist.median()))}</b> (normal for the same days: {hist.median():,.0f})."))
+    if type_note:
+        rows.append(("Kind of fires", type_note.strip()))
+    md = h["median"]
+    if np.isfinite(md["viirs_post_x"]) and np.isfinite(h["inflation"]):
+        rows.append(("Why these numbers", f"A sharper satellite joined in 2018 and reports about "
+                     f"{h['inflation']:.1f} times as many detections for the same fires. Raw counts would make a "
+                     f"normal year in {h['post']} look like {md['viirs_post_x']:.2f}× the {h['pre']} level; "
+                     f"counted the same way throughout it is {md['harm_post_x']:.2f}×. This profile uses the "
+                     "corrected numbers."))
+    rows.append(("How reliable", quality))
+    body = "".join(f"<tr><th>{k}</th><td>{v}</td></tr>" for k, v in rows)
+    return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>Fire profile: {area}</title>
+<style>
+@page {{ size: A4; margin: 16mm; }}
+body {{ font-family: -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif; color:#1f1f1e; max-width:760px;
+       margin:24px auto; padding:0 16px; font-size:14px; line-height:1.45; background:#fff; }}
+h1 {{ font-size:26px; margin:0 0 2px; }} .sub {{ color:#6b6a63; margin-bottom:18px; }}
+table {{ border-collapse:collapse; width:100%; }}
+th {{ text-align:left; vertical-align:top; width:170px; padding:9px 12px 9px 0; border-top:1px solid #e6e5df; }}
+td {{ padding:9px 0; border-top:1px solid #e6e5df; }}
+.chart {{ display:flex; align-items:flex-end; gap:6px; height:140px; margin:6px 0 4px; }}
+.b {{ flex:1; text-align:center; font-size:11px; color:#6b6a63; }}
+.bar {{ background:#c9c8c0; border-radius:3px 3px 0 0; margin:2px 0; }} .bar.pk {{ background:#eb6834; }}
+.cap {{ color:#6b6a63; font-size:12px; margin-bottom:14px; }} .foot {{ color:#6b6a63; font-size:11.5px; margin-top:16px; }}
+</style></head><body>
+<h1>Fire profile: {area}</h1>
+<div class="sub">For planning seasonal fire crews · data to {day.day} {MONTHS_LONG[day.month - 1]} {day.year}</div>
+<div class="chart">{bars}</div>
+<div class="cap">Fire detections in a normal year, month by month. Orange = fire season.</div>
+<table>{body}</table>
+<div class="foot">A fire detection is one satellite pixel seen burning; a large fire produces many detections, so
+these numbers describe burning activity, not the number of fires. "Normal" is the middle value across earlier
+years. Source: NASA FIRMS active-fire data (MODIS since 2000, VIIRS NOAA-20 since 2018), made comparable by the
+Harmonized Fire Calendar. Text generated from computed numbers by fixed templates.</div>
+</body></html>"""
+
+
 def unusual_map(cells, styles, box):
     """Light basemap, one small square per cell coloured by class, rectangle-only draw tool."""
     centre, zoom = map_view(box)
@@ -600,6 +723,13 @@ with tab1:
             st.markdown("\n".join(lines))
         st.caption("Normal = the middle value across all earlier years. A fire detection is one satellite "
                    "pixel seen burning; a large fire produces many detections.")
+        profile = fire_profile_html(area_name[0].upper() + area_name[1:] if prefer else title_area, facts, s_all,
+                                    month_to_date(box, prefer), area_shift(s_all),
+                                    small_fire_note(box, facts["peak"]), area_quality(box, used_regions), h)
+        st.download_button("Download fire profile (one page)", profile.encode("utf-8"),
+                           f"fire_profile_{(choice if prefer else 'custom_box').lower().replace(' ', '_')}.html",
+                           "text/html", help="A one-page summary for this area. Open it in a browser; "
+                                             "print it to save as PDF.")
 
     # ---- map
     st.subheader("Where it's unusual")

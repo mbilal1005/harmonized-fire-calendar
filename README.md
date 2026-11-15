@@ -14,9 +14,10 @@ calendar for a chosen area.
 - Compare three series: the naive splice (MODIS, then raw VIIRS), the harmonized series, and actual MODIS.
 - Get a plain-language "Fire season check" for fire planners: peak months, last season against normal,
   and the current month against normal.
-- See "Where it's unusual" on a 0.1° map: this month so far, the last full season, or the shift in
+- See "Where it's unusual" on a 0.25° map: this month so far, the last full season, or the shift in
   season timing, each against the square's own normal, with a toggle to show the uncorrected version.
 - Draw a rectangle on the map to check a smaller area.
+- Download a one-page "Fire profile" for the selected area (HTML, printable to PDF).
 - Browse a year-by-month calendar heatmap, raw per sensor or harmonized, with anomalous months outlined.
 - See the validation results next to the data, and download the harmonized monthly series as CSV.
 
