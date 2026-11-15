@@ -14,7 +14,7 @@ import streamlit as st
 
 AGG = "data/agg"
 RAW = "data/raw"
-C_HARM, C_NAIVE, C_MODIS = "#2a78d6", "#eb6834", "#1baf7a"   # validated colorblind-safe trio
+C_HARM, C_NAIVE, C_MODIS = "#2a78d6", "#eb6834", "#199e70"   # validated colorblind-safe trio, >= 3:1 on white
 INK, MUTED, GRIDC = "#1f1f1e", "#6b6a63", "#e6e5df"
 MIN_ANOMALY_COUNT = 10
 MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
@@ -131,8 +131,8 @@ def fmt_x(x):
 
 def base_layout(fig, height=380, **kw):
     fig.update_layout(
-        height=height, margin=dict(l=10, r=10, t=30, b=10), paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)", font=dict(color=INK, size=13), hovermode="x unified",
+        height=height, margin=dict(l=10, r=10, t=30, b=10), paper_bgcolor="#ffffff",
+        plot_bgcolor="#ffffff", font=dict(color=INK, size=13), hovermode="x unified",
         legend=dict(orientation="h", y=1.08, x=0, font=dict(color=INK)), **kw)
     fig.update_xaxes(showgrid=False, linecolor=GRIDC, tickfont=dict(color=MUTED))
     fig.update_yaxes(gridcolor=GRIDC, zeroline=False, tickfont=dict(color=MUTED), rangemode="tozero")
@@ -309,7 +309,7 @@ else:
     ticks = [t for t in (0, 1, 2, 3, 4, 5, 6) if 10 ** t <= zmax * 3]
     heat = go.Figure(go.Heatmap(
         z=np.log10(1 + z.to_numpy(float)), x=MONTHS, y=[str(y) for y in years],
-        customdata=z.to_numpy(float), colorscale="Cividis", xgap=2, ygap=2,
+        customdata=z.to_numpy(float), colorscale="Inferno", xgap=2, ygap=2,
         zmin=0, zmax=np.log10(1 + zmax), hoverongaps=False,
         hovertemplate="%{x} %{y}<br>%{customdata:,.0f} hotspots<extra></extra>",
         colorbar=dict(title="Hotspots", tickvals=[np.log10(1 + 10 ** t) for t in ticks],
@@ -317,20 +317,21 @@ else:
     for yi, y in enumerate(years):
         for mi in range(12):
             if an.iloc[yi, mi] is True or an.iloc[yi, mi] == 1:
-                for color, w, pad in (("#111111", 4, 0.46), ("#ffffff", 1.8, 0.46)):
+                for color, w, pad in (("#0b1c24", 6, 0.44), ("#35e6ff", 3.5, 0.44)):
                     heat.add_shape(type="rect", x0=mi - pad, x1=mi + pad, y0=yi - pad, y1=yi + pad,
                                    line=dict(color=color, width=w), fillcolor="rgba(0,0,0,0)")
             if pa.iloc[yi, mi] is True or pa.iloc[yi, mi] == 1:
+                bright = np.log10(1 + (z.iloc[yi, mi] or 0)) > 0.6 * np.log10(1 + zmax)
                 heat.add_annotation(x=mi, y=yi, text="partial", showarrow=False,
-                                    font=dict(size=9, color="#ffffff"))
+                                    font=dict(size=9, color="#111111" if bright else "#ffffff"))
     heat.update_layout(height=max(260, 24 * len(years) + 80), margin=dict(l=10, r=10, t=10, b=10),
-                       paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                       paper_bgcolor="#ffffff", plot_bgcolor="#ffffff",
                        font=dict(color=INK, size=12))
     heat.update_yaxes(autorange="reversed", type="category", tickfont=dict(color=MUTED))
     heat.update_xaxes(side="top", tickfont=dict(color=MUTED))
     st.plotly_chart(heat, width="stretch")
     n_an = int(sc["anom"].sum())
-    st.caption(f"Colour is on a log scale. **Outlined cells are anomalies** ({n_an} shown): above the "
+    st.caption(f"Colour is on a log scale. **Cells outlined in cyan are anomalies** ({n_an} shown): above the "
                "median + 2 × scaled MAD of the same calendar month across all years, and at least "
                f"{MIN_ANOMALY_COUNT} hotspots. Raw VIIRS counts are not comparable with MODIS counts.")
     if n_an:
