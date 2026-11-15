@@ -1,0 +1,7 @@
+data/raw/
+data/tmp/
+data/*.zip
+.venv/
+__pycache__/
+.DS_Store
+.streamlit/secrets.toml
