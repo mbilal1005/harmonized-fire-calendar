@@ -1,0 +1,41 @@
+{
+  "model": "calendar_month",
+  "regions": [
+    {
+      "region": "California",
+      "model": "calendar_month",
+      "pre_years": "2001-2017",
+      "post_years": "2019-2025",
+      "modis_per_year_pre": 8729,
+      "modis_per_year_post": 17851,
+      "viirs_per_year_post": 78588,
+      "harmonized_per_year_post": 17974,
+      "naive_change_x": 9.0,
+      "modis_change_x": 2.05,
+      "harmonized_change_x": 2.06,
+      "naive_inflation_x": 4.4,
+      "median_year_modis_pre": 8313,
+      "median_year_modis_post": 7098,
+      "median_year_viirs_post": 29337,
+      "sentence": "California: splicing raw VIIRS onto MODIS shows 9.0x the hotspots per year in 2019-2025 compared with 2001-2017; MODIS itself shows 2.05x. The naive splice overstates post-2018 activity by a factor of 4.4; the harmonized series shows 2.06x."
+    },
+    {
+      "region": "Greece",
+      "model": "calendar_month",
+      "pre_years": "2001-2017",
+      "post_years": "2019-2025",
+      "modis_per_year_pre": 1830,
+      "modis_per_year_post": 1510,
+      "viirs_per_year_post": 5382,
+      "harmonized_per_year_post": 1538,
+      "naive_change_x": 2.94,
+      "modis_change_x": 0.83,
+      "harmonized_change_x": 0.84,
+      "naive_inflation_x": 3.56,
+      "median_year_modis_pre": 1601,
+      "median_year_modis_post": 1092,
+      "median_year_viirs_post": 3884,
+      "sentence": "Greece: splicing raw VIIRS onto MODIS shows 2.94x the hotspots per year in 2019-2025 compared with 2001-2017; MODIS itself shows 0.83x. The naive splice overstates post-2018 activity by a factor of 3.56; the harmonized series shows 0.84x."
+    }
+  ]
+}
