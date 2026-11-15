@@ -21,6 +21,7 @@ RAW_DIR = "data/raw"
 AGG_DIR = "data/agg"
 GRID = 0.5            # deg, aggregation cell
 TILE = 5.0            # deg, conversion-factor tile
+FINE = 0.1            # deg, display-only grid for the map (factors stay per 5 deg tile)
 OVERLAP_START = "2018-04"
 MIN_CALMONTH_MODIS = 50    # min MODIS hotspots for a tile x calendar-month factor
 MIN_TILE_MODIS = 200       # min MODIS hotspots in overlap for a tile's own factor
@@ -153,6 +154,18 @@ def aggregate(hs):
     return g
 
 
+def aggregate_fine(hs):
+    """Counts per 0.1 deg cell x month x sensor, stored compactly (integer cell indices)."""
+    g = hs.assign(
+        lat_i=np.floor(np.round(hs["latitude"] / FINE, 6)).astype("int16"),
+        lon_i=np.floor(np.round(hs["longitude"] / FINE, 6)).astype("int16"),
+        ym=(hs["acq_date"].dt.year * 12 + hs["acq_date"].dt.month - 1).astype("int16"),
+        viirs=hs["sensor"] == "VIIRS",
+    ).groupby(["lat_i", "lon_i", "ym", "viirs"], as_index=False).size()
+    g["n"] = g.pop("size").astype("int32")
+    return g.sort_values(["lat_i", "lon_i", "ym", "viirs"]).reset_index(drop=True)
+
+
 def write_json(name, obj):
     os.makedirs(AGG_DIR, exist_ok=True)
     with open(os.path.join(AGG_DIR, name), "w") as fh:
@@ -178,11 +191,19 @@ def step_agg():
     last = hs["acq_date"].max()
     mtd = aggregate(hs[(hs["acq_date"].dt.month == last.month) & (hs["acq_date"].dt.day <= last.day)])
     mtd.to_parquet(os.path.join(AGG_DIR, "mtd_monthly.parquet"), index=False, compression="zstd")
+    # display-only fine grid (0.1 deg) for the "Where it's unusual" map
+    is_mtd = (hs["acq_date"].dt.month == last.month) & (hs["acq_date"].dt.day <= last.day)
+    for name, part in (("fine_monthly", hs), ("fine_mtd", hs[is_mtd])):
+        fp = os.path.join(AGG_DIR, name + ".parquet")
+        fine = aggregate_fine(part)
+        fine.to_parquet(fp, index=False, compression="zstd")
+        print(f"{name}.parquet: {len(fine)} rows, {os.path.getsize(fp)/1e3:.0f} kB, "
+              f"{fine[['lat_i','lon_i']].drop_duplicates().shape[0]} cells")
     none = (region_of(grid["cell_lat"] + GRID / 2, grid["cell_lon"] + GRID / 2) == "(none)")
     print(f"\ngrid_monthly.parquet: {len(grid)} rows, {os.path.getsize(path)/1e3:.0f} kB, "
           f"{grid[['cell_lat','cell_lon']].drop_duplicates().shape[0]} cells; "
           f"hotspots outside all regions: {int(grid.loc[none, 'n'].sum())}")
-    meta = dict(calendar=cal, regions=REGIONS, grid_deg=GRID, tile_deg=TILE,
+    meta = dict(calendar=cal, regions=REGIONS, grid_deg=GRID, tile_deg=TILE, fine_deg=FINE,
                 filters=dict(type="== 0 (archive)", modis_confidence=">= 30",
                              viirs_confidence="nominal or high",
                              nrt="masked at 0.01 deg locations where archive type != 0"),

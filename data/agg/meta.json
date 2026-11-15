@@ -25,6 +25,7 @@
   },
   "grid_deg": 0.5,
   "tile_deg": 5.0,
+  "fine_deg": 0.1,
   "filters": {
     "type": "== 0 (archive)",
     "modis_confidence": ">= 30",
