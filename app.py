@@ -168,76 +168,10 @@ def base_layout(fig, height=380, **kw):
     return fig
 
 
-# --------------------------------------------------------------- sidebar
-st.sidebar.header("Area")
-presets = list(REGIONS)
-default = presets.index("Greece") if "Greece" in presets else 0
-choice = st.sidebar.selectbox("Region", presets + ["Custom box"], index=default)
-if choice == "Custom box":
-    ra, rb, rc, rd = REGIONS[presets[default]]
-    c1, c2 = st.sidebar.columns(2)
-    lat0 = c1.number_input("Lat min", -90.0, 90.0, 37.5, 0.5)
-    lat1 = c2.number_input("Lat max", -90.0, 90.0, 39.0, 0.5)
-    lon0 = c1.number_input("Lon min", -180.0, 180.0, 22.5, 0.5)
-    lon1 = c2.number_input("Lon max", -180.0, 180.0, 24.5, 0.5)
-    if lat1 <= lat0 or lon1 <= lon0:
-        st.sidebar.error("Max must be larger than min.")
-        st.stop()
-    box, prefer = (lat0, lat1, lon0, lon1), None
-    st.sidebar.caption(f"Data are on a {GRID}° grid: a cell counts if its centre is inside the box.")
-else:
-    box, prefer = REGIONS[choice], choice
-
-y_min, y_max = int(cal["first_month"][:4]), int(cal["last_month"][:4])
-st.sidebar.header("Period")
-yr = st.sidebar.slider("Years", y_min, y_max, (y_min, y_max))
-
-s_all, fallback_share = box_series(box, prefer)
-used_regions = [choice] if prefer else regions_for_box(box)
-title_area = choice if prefer else f"box {box[0]:g}–{box[1]:g}°N, {box[2]:g}–{box[3]:g}°E"
-
-# ----------------------------------------------------------------- header
-st.title("Harmonized Fire Calendar")
-st.markdown("**More fires, or just a better satellite?** One consistent burning-activity record "
-            "from MODIS (1 km, 2000–) and VIIRS NOAA-20 (375 m, 2018–) active-fire hotspots.")
-
-if s_all[["modis", "viirs"]].to_numpy().sum() == 0:
-    st.warning("No hotspots in this area. Data are currently loaded for: " + ", ".join(presets) + ".")
-    st.stop()
-if not prefer and fallback_share > 0:
-    st.info(f"{fallback_share:.0%} of VIIRS hotspots in this box lie outside the preset regions and use "
-            f"the pooled conversion factor ({1/GLOBAL_POOLED:.2f} VIIRS per MODIS hotspot).")
-
-# ---------------------------------------------------------------- metrics
-h = headline_numbers(s_all)
-cur = s_all.iloc[-1]
-cur_month = s_all.index[-1]
-mtd = month_to_date(box, prefer)          # same day range in every year
-cur_mtd, hist = mtd.iloc[-1], mtd.iloc[:-1]
-lastfull = s_all.loc[cal["latest_full_month"]]
-hist_full = s_all[(s_all["cm"] == lastfull["cm"]) & (s_all.index < cal["latest_full_month"])]["harmonized"]
+MONTHS_LONG = ["January", "February", "March", "April", "May", "June", "July", "August", "September",
+               "October", "November", "December"]
 
 
-def delta_vs(v, med):
-    return f"{100 * (v / med - 1):+.0f}% vs median {med:,.0f}" if med > 0 else f"median {med:,.0f}"
-
-
-m3, m4, m1, m2 = st.columns(4)   # story first: headline metrics, then current month
-day = pd.Timestamp(cal["last_data_day"])
-rng = f"1–{day.day} {MONTHS[day.month-1]}"
-m1.metric(f"{rng} {int(cur['year'])} (month so far)",
-          f"{cur_mtd:,.0f}", delta_vs(cur_mtd, hist.median()), delta_color="inverse",
-          help=f"Harmonized (MODIS-equivalent) hotspots for {rng}, against the median of the same days "
-               f"({rng}) in {hist.index[0][:4]}–{hist.index[-1][:4]}. The latest day may be incomplete.")
-m2.metric(f"{MONTHS[int(lastfull['cm'])-1]} {int(lastfull['year'])} (last full month)",
-          f"{lastfull['harmonized']:,.0f}", delta_vs(lastfull["harmonized"], hist_full.median()),
-          delta_color="inverse", help="Harmonized hotspots against the median for that calendar month.")
-m3.metric("Naive splice overstates by", fmt_x(h["inflation"]),
-          help=f"Raw VIIRS hotspots divided by actual MODIS hotspots, {h['post']}.")
-m4.metric(f"Actual MODIS change, {h['post']} vs {h['pre']}", fmt_x(h["mean"]["modis_post_x"]),
-          help="Hotspots per year on average. See the table below for the median year.")
-
-# -------------------------------------------------------- season briefing
 def peak_run(medcal, cover=0.75):
     """Shortest run of consecutive months (may wrap across December) holding >= cover
     of the typical year (sum of calendar-month medians). Ties: the run with the larger share."""
@@ -249,167 +183,71 @@ def peak_run(medcal, cover=0.75):
             return [(st0 + k) % 12 + 1 for k in range(length)], best
 
 
-def season_briefing(s, h):
-    """Template text filled from computed numbers only."""
+def season_facts(s):
+    """Peak window and last complete season, computed from the harmonized series."""
     full = s[~s["is_partial"]]
     medcal = full.groupby("cm")["harmonized"].median()
     if medcal.sum() <= 0:
         return None
     peak, share = peak_run(medcal)
-    span = MONTHS[peak[0] - 1] if len(peak) == 1 else f"{MONTHS[peak[0] - 1]}–{MONTHS[peak[-1] - 1]}"
-    wraps = peak[-1] < peak[0]
-    f = full[full["cm"].isin(peak)].copy()
+    one = len(peak) == 1
+    f = dict(peak=peak, share=share, wraps=peak[-1] < peak[0],
+             span=MONTHS[peak[0] - 1] if one else f"{MONTHS[peak[0] - 1]}–{MONTHS[peak[-1] - 1]}",
+             span_long=MONTHS_LONG[peak[0] - 1] if one else
+             f"{MONTHS_LONG[peak[0] - 1]} to {MONTHS_LONG[peak[-1] - 1]}",
+             month_share={m: float(medcal.get(m, 0.0) / medcal.sum()) for m in peak},
+             busiest=int(medcal.idxmax()), last=None)
+    d = full[full["cm"].isin(peak)].copy()
     # a season that wraps across December belongs to the year it starts in
-    f["season"] = np.where(wraps & (f["cm"] < peak[0]), f["year"] - 1, f["year"])
-    g = f.groupby("season")
+    d["season"] = np.where(f["wraps"] & (d["cm"] < peak[0]), d["year"] - 1, d["year"])
+    g = d.groupby("season")
     seas = g["harmonized"].sum()[g.size() == len(peak)]
-    lines = [f"- **Peak months: {span}.** In a typical year they hold {share:.0%} of the year's hotspots "
-             "(the shortest run of consecutive months covering at least 75% of the calendar-month medians)."]
     if len(seas) >= 3:
         ly, lv, hist = int(seas.index[-1]), float(seas.iloc[-1]), seas.iloc[:-1]
-        med = float(hist.median())
-        rank = int((seas > lv).sum()) + 1
-        rel = (f"{abs(100 * (lv / med - 1)):.0f}% {'above' if lv >= med else 'below'} the median season "
-               f"({med:,.0f}, {int(hist.index[0])}–{int(hist.index[-1])})") if med > 0 else "no median to compare"
-        last = f[f["season"] == ly]
-        caveat = bool(last["is_nrt"].any() or (last.index > cal["fit_end"]).any())
-        label = f"{span} {ly}" if not wraps else f"{MONTHS[peak[0] - 1]} {ly}–{MONTHS[peak[-1] - 1]} {ly + 1}"
-        lines.append(f"- **Last complete season ({label}): {lv:,.0f} hotspots**, {rel}. "
-                     f"It ranks {rank} of {len(seas)} seasons."
-                     + (" (includes near-real-time data; see 2026 note)" if caveat else ""))
-    md = h["median"]
-    if np.isfinite(md["viirs_post_x"]):
-        lines.append(f"- **Trap to avoid:** comparing raw VIIRS counts with pre-2018 MODIS counts makes the "
-                     f"median year of {h['post']} look like {md['viirs_post_x']:.2f}× the {h['pre']} level. "
-                     f"Like for like it is {md['harm_post_x']:.2f}× (actual MODIS: {md['modis_post_x']:.2f}×).")
-    return "\n".join(lines)
+        last = d[d["season"] == ly]
+        f["last"] = dict(
+            year=ly, value=lv, normal=float(hist.median()), rank=int((seas > lv).sum()) + 1, n=len(seas),
+            hist=f"{int(hist.index[0])}–{int(hist.index[-1])}",
+            label=f"{f['span']} {ly}" if not f["wraps"] else
+            f"{MONTHS[peak[0] - 1]} {ly}–{MONTHS[peak[-1] - 1]} {ly + 1}",
+            caveat=bool(last["is_nrt"].any() or (last.index > cal["fit_end"]).any()))
+    return f
 
 
-brief = season_briefing(s_all, h)
-if brief:
-    with st.container(border=True):
-        st.markdown(f"**Season briefing for {title_area}** · for planning seasonal staffing · "
-                    "harmonized (MODIS-equivalent) hotspots\n\n" + brief)
+def vs_normal(v, normal):
+    """Plain-language comparison, e.g. '43% quieter than normal'."""
+    if normal <= 0:
+        return "no normal level to compare with"
+    p = 100 * (v / normal - 1)
+    if abs(p) < 5:
+        return "about normal"
+    return f"{abs(p):.0f}% {'busier' if p > 0 else 'quieter'} than normal"
 
-# ------------------------------------------------- naive vs harmonized chart
-st.subheader(f"Naive splice vs harmonized vs actual MODIS — {title_area}")
-view = st.radio("View", ["Yearly totals", "Monthly"], horizontal=True, label_visibility="collapsed")
-s = s_all[(s_all["year"] >= yr[0]) & (s_all["year"] <= yr[1])]
 
-fig = go.Figure()
-if view == "Yearly totals":
-    fy = set(full_years(s_all.index))
-    a = s[s["year"].isin(fy)].groupby("year")[["modis", "naive", "harmonized"]].sum()
-    start = int(cal["overlap_start"][:4]) - 1
-    x_ov = a.index[a.index >= start]
-    fig.add_trace(go.Scatter(x=x_ov, y=a.loc[x_ov, "naive"], name="Naive splice (raw VIIRS after 2018-04)",
-                             mode="lines+markers", line=dict(color=C_NAIVE, width=2, dash="dash"),
-                             marker=dict(size=8, symbol="diamond"), hovertemplate="%{y:,.0f}"))
-    fig.add_trace(go.Scatter(x=a.index, y=a["harmonized"], name="Harmonized (MODIS-equivalent)",
-                             mode="lines+markers", line=dict(color=C_HARM, width=2),
-                             marker=dict(size=8), hovertemplate="%{y:,.0f}"))
-    fig.add_trace(go.Scatter(x=x_ov, y=a.loc[x_ov, "modis"], name="Actual MODIS",
-                             mode="lines+markers", line=dict(color=C_MODIS, width=2, dash="dot"),
-                             marker=dict(size=8, symbol="square"), hovertemplate="%{y:,.0f}"))
-    xline, table = int(cal["overlap_start"][:4]) - 0.25, a
-    fig.update_xaxes(dtick=2)
-else:
-    x = pd.to_datetime(s.index)
-    ov = s["in_overlap"].to_numpy()
-    fig.add_trace(go.Scatter(x=x[ov], y=s.loc[ov, "naive"], name="Naive splice (raw VIIRS after 2018-04)",
-                             mode="lines", line=dict(color=C_NAIVE, width=2, dash="dash"),
-                             hovertemplate="%{y:,.0f}"))
-    fig.add_trace(go.Scatter(x=x, y=s["harmonized"], name="Harmonized (MODIS-equivalent)",
-                             mode="lines", line=dict(color=C_HARM, width=2), hovertemplate="%{y:,.0f}"))
-    fig.add_trace(go.Scatter(x=x[ov], y=s.loc[ov, "modis"], name="Actual MODIS",
-                             mode="lines", line=dict(color=C_MODIS, width=2, dash="dot"),
-                             hovertemplate="%{y:,.0f}"))
-    xline, table = pd.Timestamp(cal["overlap_start"] + "-01"), s[["modis", "viirs", "naive", "harmonized"]]
-if yr[0] <= int(cal["overlap_start"][:4]) <= yr[1]:
-    fig.add_vline(x=xline, line=dict(color=MUTED, width=1, dash="dot"))
-    fig.add_annotation(x=xline, y=1, yref="paper", text="VIIRS NOAA-20 starts", showarrow=False,
-                       xanchor="right", xshift=-6, font=dict(color=MUTED, size=12))
-for k, (ev_month, ev_label) in enumerate(EVENTS.get(prefer, [])):
-    ev_x = int(ev_month[:4]) if view == "Yearly totals" else ev_month
-    if ev_x not in table.index:
-        continue
-    ev_y = float(table.loc[ev_x, ["naive", "harmonized", "modis"]].max())
-    fig.add_annotation(x=ev_x if view == "Yearly totals" else pd.Timestamp(ev_month + "-01"), y=ev_y,
-                       text=ev_label, showarrow=True, arrowhead=0, arrowwidth=1, arrowcolor=MUTED,
-                       ax=-45 if k % 2 == 0 else 45, ay=-28, font=dict(color=INK, size=12),
-                       bgcolor="rgba(255,255,255,0.85)")
-base_layout(fig, 420, yaxis_title="Hotspots")
-fig.update_layout(margin=dict(t=60))
-st.plotly_chart(fig, width="stretch")
-st.caption("Before April 2018 all three lines are the same MODIS record. Yearly totals show complete "
-           "years only. The gap between the dashed and solid lines is the sensor change, not fire.")
-with st.expander("Show these numbers as a table"):
-    st.dataframe(table.round(0), width="stretch")
+def ordinal(n):
+    return f"{n}{'th' if 10 <= n % 100 <= 20 else {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th')}"
 
-# -------------------------------------------------- headline comparison
-st.markdown(f"**Change in hotspots per year, {h['post']} compared with {h['pre']}**")
-cmp = pd.DataFrame({
-    "Series": ["Naive splice (raw VIIRS vs earlier MODIS)", "Actual MODIS", "Harmonized"],
-    "Per year on average": [fmt_x(h["mean"][k]) for k in ("viirs_post_x", "modis_post_x", "harm_post_x")],
-    "Median year": [fmt_x(h["median"][k]) for k in ("viirs_post_x", "modis_post_x", "harm_post_x")],
-    f"Hotspots per year {h['post']} (mean)": [f"{h['mean'][k]:,.0f}" for k in ("viirs_post", "modis_post", "harm_post")],
-    f"Hotspots per year {h['post']} (median)": [f"{h['median'][k]:,.0f}" for k in ("viirs_post", "modis_post", "harm_post")],
-})
-st.dataframe(cmp, hide_index=True, width="stretch")
-st.caption(f"Baseline: MODIS {h['pre']}, {h['mean']['modis_pre']:,.0f} hotspots per year on average, "
-           f"{h['median']['modis_pre']:,.0f} in the median year. Averages are pulled up by a few extreme "
-           "fire years; the median year is not. These windows are fixed and ignore the year slider.")
 
-drift = val.get("modis_drift_check", {}).get("regions", {})
-for r, d in drift.items():
-    if r not in used_regions:
-        continue
-    gap = d["modis_below_prediction_pct"]
-    worst = val["regions"][r]["loyo"]["region"][val["chosen_model"]]["annual_abs_err_max_pct"]
-    period = d["period"].replace("..", " to ")
-    tail = (" Conversion factors are fitted on 2018–2025 only, so harmonized 2026 values show what MODIS "
-            "would have reported at its 2018–2025 behaviour. Data from "
-            f"{cal['nrt_start']} on are near-real-time and less strictly filtered.")
-    if gap > worst:
-        st.warning(f"**2026 values in {r}: MODIS is reporting fewer hotspots than expected.** For {period}, "
-                   f"actual MODIS ({d['modis_actual']:,} hotspots) is {gap:.0f}% below the harmonized "
-                   f"prediction. That is well outside the normal error: the largest annual error in any "
-                   f"held-out year 2018–2025 is {worst:.0f}%. The cause is unverified (MODIS is near end "
-                   "of life)." + tail)
-    elif gap > 0:
-        st.info(f"**2026 values in {r}: possible MODIS shortfall, not conclusive.** For {period}, actual "
-                f"MODIS ({d['modis_actual']:,} hotspots) is {gap:.0f}% below the harmonized prediction, but "
-                f"that is within this region's normal year-to-year error (up to {worst:.0f}% in held-out "
-                "years 2018–2025) and rests on few hotspots." + tail)
-
-# ------------------------------------------------------------- calendar
-st.subheader("Burning-activity calendar")
-mode = st.radio("Series", ["Harmonized", "Raw MODIS", "Raw VIIRS"], horizontal=True,
-                label_visibility="collapsed")
-col = {"Harmonized": "harmonized", "Raw MODIS": "modis", "Raw VIIRS": "viirs"}[mode]
-sc = s_all.copy()
-if col == "viirs":
-    sc = sc[sc["in_overlap"]]
-anom, _ = anomalies(sc, col)
-sc = sc.assign(anom=anom)
-sc = sc[(sc["year"] >= yr[0]) & (sc["year"] <= yr[1])]
-if sc.empty:
-    st.info("No data for this series in the selected years.")
-else:
+def calendar_figure(sc, col, yr):
+    """Year x month heatmap with anomalous months outlined. Returns (figure, shown rows)."""
+    anom, _ = anomalies(sc, col)
+    sc = sc.assign(anom=anom)
+    sc = sc[(sc["year"] >= yr[0]) & (sc["year"] <= yr[1])]
+    if sc.empty:
+        return None, sc
     years = list(range(int(sc["year"].min()), int(sc["year"].max()) + 1))
-    z = sc.pivot(index="year", columns="cm", values=col).reindex(index=years, columns=range(1, 13))
-    an = sc.pivot(index="year", columns="cm", values="anom").reindex(index=years, columns=range(1, 13))
-    pa = sc.pivot(index="year", columns="cm", values="is_partial").reindex(index=years, columns=range(1, 13))
+    piv = lambda c: sc.pivot(index="year", columns="cm", values=c).reindex(index=years, columns=range(1, 13))
+    z, an, pa = piv(col), piv("anom"), piv("is_partial")
     zmax = max(float(np.nanmax(z.to_numpy())), 10)
     ticks = [t for t in (0, 1, 2, 3, 4, 5, 6) if 10 ** t <= zmax * 3]
     heat = go.Figure(go.Heatmap(
         z=np.log10(1 + z.to_numpy(float)), x=MONTHS, y=[str(y) for y in years],
         customdata=z.to_numpy(float), colorscale="Inferno", xgap=2, ygap=2,
         zmin=0, zmax=np.log10(1 + zmax), hoverongaps=False,
-        hovertemplate="%{x} %{y}<br>%{customdata:,.0f} hotspots<extra></extra>",
-        colorbar=dict(title="Hotspots", tickvals=[np.log10(1 + 10 ** t) for t in ticks],
+        hovertemplate="%{x} %{y}<br>%{customdata:,.0f} fire detections<extra></extra>",
+        colorbar=dict(title="Fire detections", tickvals=[np.log10(1 + 10 ** t) for t in ticks],
                       ticktext=[f"{10 ** t:,}" for t in ticks], thickness=12, len=0.8)))
-    for yi, y in enumerate(years):
+    for yi in range(len(years)):
         for mi in range(12):
             if an.iloc[yi, mi] is True or an.iloc[yi, mi] == 1:
                 for color, w, pad in (("#0b1c24", 6, 0.44), ("#35e6ff", 3.5, 0.44)):
@@ -417,90 +255,336 @@ else:
                                    line=dict(color=color, width=w), fillcolor="rgba(0,0,0,0)")
             if pa.iloc[yi, mi] is True or pa.iloc[yi, mi] == 1:
                 bright = np.log10(1 + (z.iloc[yi, mi] or 0)) > 0.6 * np.log10(1 + zmax)
-                heat.add_annotation(x=mi, y=yi, text="partial", showarrow=False,
+                heat.add_annotation(x=mi, y=yi, text="so far", showarrow=False,
                                     font=dict(size=9, color="#111111" if bright else "#ffffff"))
     heat.update_layout(height=max(260, 24 * len(years) + 80), margin=dict(l=10, r=10, t=10, b=10),
-                       paper_bgcolor="#ffffff", plot_bgcolor="#ffffff",
-                       font=dict(color=INK, size=12))
+                       paper_bgcolor="#ffffff", plot_bgcolor="#ffffff", font=dict(color=INK, size=12))
     heat.update_yaxes(autorange="reversed", type="category", tickfont=dict(color=MUTED))
     heat.update_xaxes(side="top", tickfont=dict(color=MUTED))
-    st.plotly_chart(heat, width="stretch")
-    n_an = int(sc["anom"].sum())
-    st.caption(f"Colour is on a log scale. **Cells outlined in cyan are anomalies** ({n_an} shown): above the "
-               "median + 2 × scaled MAD of the same calendar month across all years, computed on "
-               "log(1 + count), and at least "
-               f"{MIN_ANOMALY_COUNT} hotspots. Raw VIIRS counts are not comparable with MODIS counts.")
-    if n_an:
-        with st.expander("List anomalous months"):
-            st.dataframe(sc.loc[sc["anom"], [col]].round(0).rename(columns={col: "hotspots"})
-                         .sort_values("hotspots", ascending=False), width="stretch")
+    return heat, sc
 
-# ------------------------------------------------------------ validation
-st.subheader("Validation")
-if not used_regions:
-    st.info("This box is outside the validated regions; the pooled factor is unvalidated here.")
-for r in used_regions:
-    v = val["regions"].get(r)
-    if not v:
-        continue
-    rows = []
-    for test, label in (("loyo", "Leave one year out"), ("forward", "Forward")):
-        if not v.get(test):
-            continue
-        if test == "forward":
-            label = f"Forward (fit {v[test]['train'].replace('..', ' to ')}, test {v[test]['test'].replace('..', ' to ')})"
-        for m in val["models"]:
-            x = v[test]["region"][m]
-            rows.append({
-                "Test": label, "Model": m.replace("_", " ") + (" ✓ used" if m == val["chosen_model"] else ""),
-                "Median monthly error %": x["mdape_pct"], "Median annual error %": x["annual_abs_err_median_pct"],
-                "Worst annual error %": x["annual_abs_err_max_pct"], "Bias %": x["bias_pct"],
-                "Correlation": round(x["r"], 3), "Months": x["n_months"]})
-    st.markdown(f"**{r}** — converted VIIRS compared with actual MODIS on data the factors never saw "
-                f"(fit period {val['fit_period'].replace('..', ' to ')})")
-    st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
-    ts = v["loyo"]["tile_summary"]
-    if ts["median_tile_mdape_pct"]:
-        st.caption(f"At the level of single {TILE:g}° tiles the median monthly error of the model used is "
-                   f"{ts['median_tile_mdape_pct'][val['chosen_model']]}% ({ts['n_tiles_scored']} tiles with "
-                   "enough data), so small boxes are less reliable than whole regions.")
-st.caption("Monthly error = median absolute percentage error over months with at least 10 MODIS hotspots. "
-           "The model used was picked for the lowest leave-one-year-out monthly error across regions.")
 
-# ------------------------------------------------------------- downloads
-st.subheader("Downloads")
-d1, d2 = st.columns(2)
-out = s[["modis", "viirs", "naive", "harmonized", "in_overlap", "is_nrt", "is_partial"]].copy()
-out["harmonized"] = out["harmonized"].round(1)
-slug = (choice if prefer else "custom_box").lower().replace(" ", "_")
-d1.download_button("Harmonized monthly CSV", out.to_csv().encode(), f"harmonized_monthly_{slug}.csv",
-                   "text/csv")
-raw_files = glob.glob(os.path.join(RAW, "**", "*.csv"), recursive=True)
-if raw_files:
-    @st.cache_data(show_spinner="Loading raw hotspots…")
-    def raw_hotspots():
-        import pipeline
-        return pipeline.load_raw()[0]
-
-    if d2.button("Prepare hotspot-level CSV"):
-        hs = raw_hotspots()
-        sel = hs[hs["latitude"].between(box[0], box[1]) & hs["longitude"].between(box[2], box[3])
-                 & hs["acq_date"].dt.year.between(yr[0], yr[1])]
-        d2.download_button(f"Download {len(sel):,} hotspots", sel.to_csv(index=False).encode(),
-                           f"hotspots_{slug}.csv", "text/csv")
+# --------------------------------------------------------------- sidebar
+st.sidebar.header("Area")
+presets = list(REGIONS)
+default = presets.index("Greece") if "Greece" in presets else 0
+choice = st.sidebar.selectbox("Region", presets + ["Custom box"], index=default, key="region_choice")
+if choice == "Custom box":
+    with st.sidebar.expander("Box coordinates", expanded=True):
+        c1, c2 = st.columns(2)
+        lat0 = c1.number_input("Lat min", -90.0, 90.0, 37.5, 0.5, key="lat0")
+        lat1 = c2.number_input("Lat max", -90.0, 90.0, 39.0, 0.5, key="lat1")
+        lon0 = c1.number_input("Lon min", -180.0, 180.0, 22.5, 0.5, key="lon0")
+        lon1 = c2.number_input("Lon max", -180.0, 180.0, 24.5, 0.5, key="lon1")
+        st.caption(f"The map is divided into {GRID}° squares. A square counts if its centre is inside the box.")
+    if lat1 <= lat0 or lon1 <= lon0:
+        st.sidebar.error("Max must be larger than min.")
+        st.stop()
+    box, prefer = (lat0, lat1, lon0, lon1), None
 else:
-    d2.caption("Hotspot-level download needs the raw FIRMS files in ./data/raw (local runs only).")
+    box, prefer = REGIONS[choice], choice
 
-# --------------------------------------------------------- method & limits
-with st.expander("Method and limits"):
-    f = meta["filters"]
-    st.markdown(f"""
+y_min, y_max = int(cal["first_month"][:4]), int(cal["last_month"][:4])
+st.sidebar.header("Period")
+yr = st.sidebar.slider("Years", y_min, y_max, (y_min, y_max))
+
+s_all, fallback_share = box_series(box, prefer)
+used_regions = [choice] if prefer else regions_for_box(box)
+title_area = choice if prefer else f"box {box[0]:g}–{box[1]:g}°N, {box[2]:g}–{box[3]:g}°E"
+area_name = choice if prefer else "the selected box"
+s = s_all[(s_all["year"] >= yr[0]) & (s_all["year"] <= yr[1])]
+
+st.title("Harmonized Fire Calendar")
+if s_all[["modis", "viirs"]].to_numpy().sum() == 0:
+    st.warning("No fire detections in this area. Data are currently loaded for: " + ", ".join(presets) + ".")
+    st.stop()
+
+h = headline_numbers(s_all)
+facts = season_facts(s_all)
+day = pd.Timestamp(cal["last_data_day"])
+tab1, tab2 = st.tabs(["Fire season check", "Method & validation"])
+
+# =================================================== TAB 1: fire season check
+with tab1:
+    st.markdown("*For fire planners deciding when and how many seasonal crews to hire*")
+
+    # ---- the answer
+    if facts:
+        st.markdown(f"## {area_name[0].upper() + area_name[1:]}: the fire season runs "
+                    f"{facts['span_long']}")
+        ans = (f"That window holds **{facts['share']:.0%} of a normal year's fire activity**. "
+               f"The busiest month is {MONTHS_LONG[facts['busiest'] - 1]}.")
+        if facts["last"]:
+            L = facts["last"]
+            ans += (f" The last full season ({L['label']}) was "
+                    f"**{vs_normal(L['value'], L['normal'])}**.")
+        st.markdown(ans)
+
+        # ---- season briefing
+        with st.container(border=True):
+            lines = ["**Season briefing**", ""]
+            shares = ", ".join(f"{MONTHS[m - 1]} {p:.0%}" for m, p in facts["month_share"].items())
+            lines.append(f"- **When to staff up: {facts['span']}.** Share of a normal year's fire activity by "
+                         f"month: {shares}. Together {facts['share']:.0%}.")
+            if facts["last"]:
+                L = facts["last"]
+                lines.append(
+                    f"- **Last full season ({L['label']}): {L['value']:,.0f} fire detections**, "
+                    f"{vs_normal(L['value'], L['normal'])} ({L['normal']:,.0f} in a normal season, "
+                    f"{L['hist']}). It was the {ordinal(L['rank'])} busiest of {L['n']} seasons."
+                    + (" (includes preliminary recent data; see the 2026 note under Method & validation)"
+                       if L["caveat"] else ""))
+            md = h["median"]
+            if np.isfinite(md["viirs_post_x"]) and np.isfinite(h["inflation"]):
+                lines.append(
+                    f"- **Why not just count raw satellite detections?** A sharper satellite joined in 2018 and "
+                    f"reports about {h['inflation']:.1f} times as many detections for the same fires. Raw counts "
+                    f"make a normal year in {h['post']} look like {md['viirs_post_x']:.2f}× the {h['pre']} level. "
+                    f"Counted the same way throughout, it is {md['harm_post_x']:.2f}×. All numbers on this page "
+                    "are counted the same way throughout.")
+            st.markdown("\n".join(lines))
+        st.caption("Normal = the middle value across all earlier years. A fire detection is one satellite "
+                   "pixel seen burning; a large fire produces many detections.")
+
+    # ---- calendar
+    st.subheader("Fire activity calendar")
+    heat, shown = calendar_figure(s_all, "harmonized", yr)
+    if heat is None:
+        st.info("No data in the selected years.")
+    else:
+        st.plotly_chart(heat, width="stretch", key="cal_main")
+        n_an = int(shown["anom"].sum())
+        st.caption("Each square is one month; brighter means more fire activity (each colour step is ten "
+                   f"times more). **Squares outlined in light blue were unusually active for that time of "
+                   f"year** ({n_an} shown).")
+        if n_an:
+            with st.expander("List the unusually active months"):
+                st.dataframe(shown.loc[shown["anom"], ["harmonized"]].round(0)
+                             .rename(columns={"harmonized": "fire detections"})
+                             .sort_values("fire detections", ascending=False), width="stretch")
+
+    # ---- current month vs normal
+    st.subheader("Right now compared with normal")
+    mtd = month_to_date(box, prefer)          # same day range in every year
+    cur_mtd, hist = mtd.iloc[-1], mtd.iloc[:-1]
+    lastfull = s_all.loc[cal["latest_full_month"]]
+    hist_full = s_all[(s_all["cm"] == lastfull["cm"]) & (s_all.index < cal["latest_full_month"])]["harmonized"]
+
+    def delta_vs(v, normal):
+        return f"{100 * (v / normal - 1):+.0f}% vs normal ({normal:,.0f})" if normal > 0 else f"normal: {normal:,.0f}"
+
+    rng = f"1–{day.day} {MONTHS[day.month - 1]}"
+    m1, m2 = st.columns(2)
+    m1.metric(f"This month so far ({rng} {day.year})", f"{cur_mtd:,.0f}", delta_vs(cur_mtd, hist.median()),
+              delta_color="inverse",
+              help=f"Fire detections for {rng}, compared with the same days in "
+                   f"{hist.index[0][:4]}–{hist.index[-1][:4]}. The latest day may be incomplete.")
+    m2.metric(f"Last full month ({MONTHS[int(lastfull['cm']) - 1]} {int(lastfull['year'])})",
+              f"{lastfull['harmonized']:,.0f}", delta_vs(lastfull["harmonized"], hist_full.median()),
+              delta_color="inverse", help="Compared with the same month in earlier years.")
+
+    # ---- downloads
+    st.subheader("Downloads")
+    d1, d2 = st.columns(2)
+    out = s[["modis", "viirs", "naive", "harmonized", "in_overlap", "is_nrt", "is_partial"]].copy()
+    out["harmonized"] = out["harmonized"].round(1)
+    slug = (choice if prefer else "custom_box").lower().replace(" ", "_")
+    d1.download_button("Monthly fire activity (CSV)", out.to_csv().encode(),
+                       f"harmonized_monthly_{slug}.csv", "text/csv")
+    raw_files = glob.glob(os.path.join(RAW, "**", "*.csv"), recursive=True)
+    if raw_files:
+        @st.cache_data(show_spinner="Loading individual detections…")
+        def raw_hotspots():
+            import pipeline
+            return pipeline.load_raw()[0]
+
+        if d2.button("Prepare individual detections (CSV)"):
+            hs = raw_hotspots()
+            sel = hs[hs["latitude"].between(box[0], box[1]) & hs["longitude"].between(box[2], box[3])
+                     & hs["acq_date"].dt.year.between(yr[0], yr[1])]
+            d2.download_button(f"Download {len(sel):,} detections", sel.to_csv(index=False).encode(),
+                               f"hotspots_{slug}.csv", "text/csv")
+    else:
+        d2.caption("The list of individual detections is only available when the app runs locally "
+                   "with the raw data files.")
+
+# ================================================ TAB 2: method & validation
+with tab2:
+    st.markdown("**More fires, or just a better satellite?** One consistent burning-activity record "
+                "from MODIS (1 km, 2000–) and VIIRS NOAA-20 (375 m, 2018–) active-fire hotspots.")
+    if not prefer and fallback_share > 0:
+        st.info(f"{fallback_share:.0%} of VIIRS hotspots in this box lie outside the preset regions and use "
+                f"the pooled conversion factor ({1/GLOBAL_POOLED:.2f} VIIRS per MODIS hotspot).")
+
+    m3, m4, m5 = st.columns(3)
+    m3.metric("Naive splice overstates by", fmt_x(h["inflation"]),
+              help=f"Raw VIIRS hotspots divided by actual MODIS hotspots, {h['post']}.")
+    m4.metric(f"Actual MODIS change, {h['post']} vs {h['pre']}", fmt_x(h["mean"]["modis_post_x"]),
+              help="Hotspots per year on average. See the table below for the median year.")
+    m5.metric("Naive splice change, same years", fmt_x(h["mean"]["viirs_post_x"]),
+              help="Raw VIIRS hotspots per year against MODIS hotspots per year before 2018.")
+
+    # ---- naive vs harmonized chart
+    st.subheader(f"Naive splice vs harmonized vs actual MODIS — {title_area}")
+    view = st.radio("View", ["Yearly totals", "Monthly"], horizontal=True, label_visibility="collapsed")
+    fig = go.Figure()
+    if view == "Yearly totals":
+        fy = set(full_years(s_all.index))
+        a = s[s["year"].isin(fy)].groupby("year")[["modis", "naive", "harmonized"]].sum()
+        start = int(cal["overlap_start"][:4]) - 1
+        x_ov = a.index[a.index >= start]
+        fig.add_trace(go.Scatter(x=x_ov, y=a.loc[x_ov, "naive"], name="Naive splice (raw VIIRS after 2018-04)",
+                                 mode="lines+markers", line=dict(color=C_NAIVE, width=2, dash="dash"),
+                                 marker=dict(size=8, symbol="diamond"), hovertemplate="%{y:,.0f}"))
+        fig.add_trace(go.Scatter(x=a.index, y=a["harmonized"], name="Harmonized (MODIS-equivalent)",
+                                 mode="lines+markers", line=dict(color=C_HARM, width=2),
+                                 marker=dict(size=8), hovertemplate="%{y:,.0f}"))
+        fig.add_trace(go.Scatter(x=x_ov, y=a.loc[x_ov, "modis"], name="Actual MODIS",
+                                 mode="lines+markers", line=dict(color=C_MODIS, width=2, dash="dot"),
+                                 marker=dict(size=8, symbol="square"), hovertemplate="%{y:,.0f}"))
+        xline, table = int(cal["overlap_start"][:4]) - 0.25, a
+        fig.update_xaxes(dtick=2)
+    else:
+        x = pd.to_datetime(s.index)
+        ov = s["in_overlap"].to_numpy()
+        fig.add_trace(go.Scatter(x=x[ov], y=s.loc[ov, "naive"], name="Naive splice (raw VIIRS after 2018-04)",
+                                 mode="lines", line=dict(color=C_NAIVE, width=2, dash="dash"),
+                                 hovertemplate="%{y:,.0f}"))
+        fig.add_trace(go.Scatter(x=x, y=s["harmonized"], name="Harmonized (MODIS-equivalent)",
+                                 mode="lines", line=dict(color=C_HARM, width=2), hovertemplate="%{y:,.0f}"))
+        fig.add_trace(go.Scatter(x=x[ov], y=s.loc[ov, "modis"], name="Actual MODIS",
+                                 mode="lines", line=dict(color=C_MODIS, width=2, dash="dot"),
+                                 hovertemplate="%{y:,.0f}"))
+        xline, table = pd.Timestamp(cal["overlap_start"] + "-01"), s[["modis", "viirs", "naive", "harmonized"]]
+    if yr[0] <= int(cal["overlap_start"][:4]) <= yr[1]:
+        fig.add_vline(x=xline, line=dict(color=MUTED, width=1, dash="dot"))
+        fig.add_annotation(x=xline, y=1, yref="paper", text="VIIRS NOAA-20 starts", showarrow=False,
+                           xanchor="right", xshift=-6, font=dict(color=MUTED, size=12))
+    for k, (ev_month, ev_label) in enumerate(EVENTS.get(prefer, [])):
+        ev_x = int(ev_month[:4]) if view == "Yearly totals" else ev_month
+        if ev_x not in table.index:
+            continue
+        ev_y = float(table.loc[ev_x, ["naive", "harmonized", "modis"]].max())
+        fig.add_annotation(x=ev_x if view == "Yearly totals" else pd.Timestamp(ev_month + "-01"), y=ev_y,
+                           text=ev_label, showarrow=True, arrowhead=0, arrowwidth=1, arrowcolor=MUTED,
+                           ax=-45 if k % 2 == 0 else 45, ay=-28, font=dict(color=INK, size=12),
+                           bgcolor="rgba(255,255,255,0.85)")
+    base_layout(fig, 420, yaxis_title="Hotspots")
+    fig.update_layout(margin=dict(t=60))
+    st.plotly_chart(fig, width="stretch", key="main_chart")
+    st.caption("Before April 2018 all three lines are the same MODIS record. Yearly totals show complete "
+               "years only. The gap between the dashed and solid lines is the sensor change, not fire.")
+    with st.expander("Show these numbers as a table"):
+        st.dataframe(table.round(0), width="stretch")
+
+    # ---- headline comparison
+    st.markdown(f"**Change in hotspots per year, {h['post']} compared with {h['pre']}**")
+    keys = ("viirs_post", "modis_post", "harm_post")
+    cmp = pd.DataFrame({
+        "Series": ["Naive splice (raw VIIRS vs earlier MODIS)", "Actual MODIS", "Harmonized"],
+        "Per year on average": [fmt_x(h["mean"][k + "_x"]) for k in keys],
+        "Median year": [fmt_x(h["median"][k + "_x"]) for k in keys],
+        f"Hotspots per year {h['post']} (mean)": [f"{h['mean'][k]:,.0f}" for k in keys],
+        f"Hotspots per year {h['post']} (median)": [f"{h['median'][k]:,.0f}" for k in keys],
+    })
+    st.dataframe(cmp, hide_index=True, width="stretch")
+    st.caption(f"Baseline: MODIS {h['pre']}, {h['mean']['modis_pre']:,.0f} hotspots per year on average, "
+               f"{h['median']['modis_pre']:,.0f} in the median year. Averages are pulled up by a few extreme "
+               "fire years; the median year is not. These windows are fixed and ignore the year slider.")
+
+    # ---- 2026 note
+    st.subheader("2026 note")
+    drift = val.get("modis_drift_check", {}).get("regions", {})
+    shown_note = False
+    for r, d in drift.items():
+        if r not in used_regions:
+            continue
+        gap = d["modis_below_prediction_pct"]
+        worst = val["regions"][r]["loyo"]["region"][val["chosen_model"]]["annual_abs_err_max_pct"]
+        period = d["period"].replace("..", " to ")
+        tail = (" Conversion factors are fitted on 2018–2025 only, so harmonized 2026 values show what MODIS "
+                "would have reported at its 2018–2025 behaviour. Data from "
+                f"{cal['nrt_start']} on are near-real-time and less strictly filtered.")
+        if gap > worst:
+            shown_note = True
+            st.warning(f"**2026 values in {r}: MODIS is reporting fewer hotspots than expected.** For {period}, "
+                       f"actual MODIS ({d['modis_actual']:,} hotspots) is {gap:.0f}% below the harmonized "
+                       f"prediction. That is well outside the normal error: the largest annual error in any "
+                       f"held-out year 2018–2025 is {worst:.0f}%. The cause is unverified (MODIS is near end "
+                       "of life)." + tail)
+        elif gap > 0:
+            shown_note = True
+            st.info(f"**2026 values in {r}: possible MODIS shortfall, not conclusive.** For {period}, actual "
+                    f"MODIS ({d['modis_actual']:,} hotspots) is {gap:.0f}% below the harmonized prediction, but "
+                    f"that is within this region's normal year-to-year error (up to {worst:.0f}% in held-out "
+                    "years 2018–2025) and rests on few hotspots." + tail)
+    if not shown_note:
+        st.caption(f"Data from {cal['nrt_start']} on are near-real-time and less strictly filtered.")
+
+    # ---- validation
+    st.subheader("Validation")
+    if not used_regions:
+        st.info("This box is outside the validated regions; the pooled factor is unvalidated here.")
+    for r in used_regions:
+        v = val["regions"].get(r)
+        if not v:
+            continue
+        rows = []
+        for test, label in (("loyo", "Leave one year out"), ("forward", "Forward")):
+            if not v.get(test):
+                continue
+            if test == "forward":
+                label = (f"Forward (fit {v[test]['train'].replace('..', ' to ')}, "
+                         f"test {v[test]['test'].replace('..', ' to ')})")
+            for m in val["models"]:
+                x = v[test]["region"][m]
+                rows.append({
+                    "Test": label,
+                    "Model": m.replace("_", " ") + (" ✓ used" if m == val["chosen_model"] else ""),
+                    "Median monthly error %": x["mdape_pct"],
+                    "Median annual error %": x["annual_abs_err_median_pct"],
+                    "Worst annual error %": x["annual_abs_err_max_pct"], "Bias %": x["bias_pct"],
+                    "Correlation": round(x["r"], 3), "Months": x["n_months"]})
+        st.markdown(f"**{r}** — converted VIIRS compared with actual MODIS on data the factors never saw "
+                    f"(fit period {val['fit_period'].replace('..', ' to ')})")
+        st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+        ts = v["loyo"]["tile_summary"]
+        if ts["median_tile_mdape_pct"]:
+            st.caption(f"At the level of single {TILE:g}° tiles the median monthly error of the model used is "
+                       f"{ts['median_tile_mdape_pct'][val['chosen_model']]}% ({ts['n_tiles_scored']} tiles with "
+                       "enough data), so small boxes are less reliable than whole regions.")
+    st.caption("Monthly error = median absolute percentage error over months with at least 10 MODIS hotspots. "
+               "The model used was picked for the lowest leave-one-year-out monthly error across regions.")
+
+    # ---- raw per-sensor calendar
+    with st.expander("Calendar per sensor (raw counts)"):
+        mode = st.radio("Series", ["Harmonized", "Raw MODIS", "Raw VIIRS"], horizontal=True,
+                        label_visibility="collapsed")
+        col = {"Harmonized": "harmonized", "Raw MODIS": "modis", "Raw VIIRS": "viirs"}[mode]
+        heat2, _ = calendar_figure(s_all[s_all["in_overlap"]] if col == "viirs" else s_all, col, yr)
+        if heat2 is None:
+            st.info("No data for this series in the selected years.")
+        else:
+            st.plotly_chart(heat2, width="stretch", key="cal_raw")
+        st.caption("Raw VIIRS counts are not comparable with MODIS counts. Outlined cells are anomalies of "
+                   "the series shown.")
+
+    # ---- method & limits
+    with st.expander("Method and limits", expanded=True):
+        f = meta["filters"]
+        st.markdown(f"""
 **Method.** NASA FIRMS hotspots from MODIS Collection 6.1 (Terra + Aqua) and VIIRS NOAA-20 375 m are
 filtered (vegetation-fire type only; MODIS confidence {f['modis_confidence']}; VIIRS confidence
 {f['viirs_confidence']}) and counted per {GRID}° cell and month. For each {TILE:g}° tile and calendar month,
 a conversion factor = MODIS hotspots / VIIRS hotspots over {val['fit_period'].replace('..', ' to ')}.
 Tiles or months with too few MODIS hotspots fall back to the tile's or region's pooled factor.
 The harmonized series is MODIS before {cal['overlap_start']} and converted VIIRS after.
+
+**Anomalies.** A month is outlined when log(1 + count) exceeds the median + 2 × scaled MAD of the same
+calendar month across all years, and it has at least {MIN_ANOMALY_COUNT} hotspots.
+
+**Fire season.** The shortest run of consecutive months that holds at least 75% of the sum of
+calendar-month medians of the harmonized series.
 
 **Limits.**
 - Hotspots are pixels, not fire events. One large fire produces many pixels, so a few extreme months dominate totals.
@@ -510,5 +594,6 @@ The harmonized series is MODIS before {cal['overlap_start']} and converted VIIRS
 - Near-real-time data (from {cal['nrt_start']}) have no fire-type classification. Known static heat sources are masked at 0.01°, which removes most but not all non-vegetation detections.
 - Tested on California and Greece only. Regions mixing forest and cropland burning may need finer tiles.
 """)
+
 st.caption(f"Data: NASA FIRMS (MODIS C6.1, VIIRS NOAA-20 C2). Last data day {cal['last_data_day']}. "
-           f"{meta['hotspots_kept']:,} hotspots after filtering.")
+           f"{meta['hotspots_kept']:,} fire detections after filtering.")
