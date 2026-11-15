@@ -1,0 +1,138 @@
+{
+  "calendar": {
+    "first_month": "2000-11",
+    "last_month": "2026-11",
+    "last_data_day": "2026-11-15",
+    "latest_full_month": "2026-10",
+    "overlap_start": "2018-04",
+    "nrt_start": "2026-08",
+    "fit_end": "2026-07"
+  },
+  "regions": {
+    "California": [
+      32.5,
+      42.5,
+      -124.5,
+      -114.0
+    ],
+    "Greece": [
+      34.5,
+      42.0,
+      19.0,
+      29.7
+    ]
+  },
+  "grid_deg": 0.5,
+  "tile_deg": 5.0,
+  "filters": {
+    "type": "== 0 (archive)",
+    "modis_confidence": ">= 30",
+    "viirs_confidence": "nominal or high",
+    "nrt": "masked at 0.01 deg locations where archive type != 0"
+  },
+  "rows_per_file": [
+    {
+      "file": "fire_archive_J1V-C2_850785.csv",
+      "sensor": "VIIRS",
+      "rows_raw": 715433,
+      "has_type": true,
+      "after_type": 660341,
+      "after_nrt_mask": 660341,
+      "after_conf": 629458
+    },
+    {
+      "file": "fire_archive_J1V-C2_850789.csv",
+      "sensor": "VIIRS",
+      "rows_raw": 51549,
+      "has_type": true,
+      "after_type": 43928,
+      "after_nrt_mask": 43928,
+      "after_conf": 41410
+    },
+    {
+      "file": "fire_archive_M-C61_850784.csv",
+      "sensor": "MODIS",
+      "rows_raw": 322881,
+      "has_type": true,
+      "after_type": 315142,
+      "after_nrt_mask": 315142,
+      "after_conf": 295965
+    },
+    {
+      "file": "fire_archive_M-C61_850788.csv",
+      "sensor": "MODIS",
+      "rows_raw": 47428,
+      "has_type": true,
+      "after_type": 45080,
+      "after_nrt_mask": 45080,
+      "after_conf": 43076
+    },
+    {
+      "file": "fire_nrt_J1V-C2_850785.csv",
+      "sensor": "VIIRS",
+      "rows_raw": 10937,
+      "has_type": false,
+      "after_type": 10937,
+      "after_nrt_mask": 8702,
+      "after_conf": 8243
+    },
+    {
+      "file": "fire_nrt_J1V-C2_850789.csv",
+      "sensor": "VIIRS",
+      "rows_raw": 1888,
+      "has_type": false,
+      "after_type": 1888,
+      "after_nrt_mask": 1635,
+      "after_conf": 1520
+    },
+    {
+      "file": "fire_nrt_M-C61_850784.csv",
+      "sensor": "MODIS",
+      "rows_raw": 1194,
+      "has_type": false,
+      "after_type": 1194,
+      "after_nrt_mask": 1176,
+      "after_conf": 1113
+    },
+    {
+      "file": "fire_nrt_M-C61_850788.csv",
+      "sensor": "MODIS",
+      "rows_raw": 198,
+      "has_type": false,
+      "after_type": 198,
+      "after_nrt_mask": 189,
+      "after_conf": 168
+    }
+  ],
+  "nrt_mask": [
+    {
+      "region": "California",
+      "sensor": "MODIS",
+      "nrt_points": 1194,
+      "masked": 18,
+      "masked_pct": 1.5
+    },
+    {
+      "region": "California",
+      "sensor": "VIIRS",
+      "nrt_points": 10937,
+      "masked": 2235,
+      "masked_pct": 20.4
+    },
+    {
+      "region": "Greece",
+      "sensor": "MODIS",
+      "nrt_points": 198,
+      "masked": 9,
+      "masked_pct": 4.5
+    },
+    {
+      "region": "Greece",
+      "sensor": "VIIRS",
+      "nrt_points": 1888,
+      "masked": 253,
+      "masked_pct": 13.4
+    }
+  ],
+  "hotspots_kept": 1020953
+}
