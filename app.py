@@ -112,13 +112,19 @@ def box_series(box, prefer=None):
     return s, fallback_share
 
 
-def anomalies(s, col):
-    """Month > median + 2 x scaled MAD of the same calendar month (full months only)."""
-    full = s[~s["is_partial"]]
-    med = full.groupby("cm")[col].median()
-    mad = full.groupby("cm")[col].apply(lambda x: (x - x.median()).abs().median()) * 1.4826
+def anomalies(s, col, log=True):
+    """Month > median + 2 x scaled MAD of the same calendar month (full months only).
+
+    Computed on log1p(counts) by default: hotspot counts are strongly right-skewed,
+    so on raw counts a quiet calendar month has a tiny MAD and flags too easily.
+    """
+    x = np.log1p(s[col]) if log else s[col]
+    full = x[~s["is_partial"]]
+    cm = s.loc[full.index, "cm"]
+    med = full.groupby(cm).median()
+    mad = full.groupby(cm).apply(lambda v: (v - v.median()).abs().median()) * 1.4826
     thr = (med + 2 * mad).reindex(s["cm"]).to_numpy()
-    return (s[col] > thr) & (s[col] >= MIN_ANOMALY_COUNT) & ~s["is_partial"], med
+    return (x > thr) & (s[col] >= MIN_ANOMALY_COUNT) & ~s["is_partial"], med
 
 
 def full_years(months):
@@ -352,7 +358,8 @@ else:
     st.plotly_chart(heat, width="stretch")
     n_an = int(sc["anom"].sum())
     st.caption(f"Colour is on a log scale. **Cells outlined in cyan are anomalies** ({n_an} shown): above the "
-               "median + 2 × scaled MAD of the same calendar month across all years, and at least "
+               "median + 2 × scaled MAD of the same calendar month across all years, computed on "
+               "log(1 + count), and at least "
                f"{MIN_ANOMALY_COUNT} hotspots. Raw VIIRS counts are not comparable with MODIS counts.")
     if n_an:
         with st.expander("List anomalous months"):
