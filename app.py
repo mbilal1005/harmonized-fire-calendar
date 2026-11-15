@@ -94,13 +94,21 @@ def cell_density(prefer, y0, y1):
     return tot.rename("n").reset_index()
 
 
+def map_view(box, width_px=900, height_px=520):
+    """Centre and zoom level that show the whole box (explicit, so the view always follows the selection)."""
+    lat_span, lon_span = max(box[1] - box[0], 0.2), max(box[3] - box[2], 0.2)
+    coslat = np.cos(np.radians((box[0] + box[1]) / 2))      # Web Mercator stretches latitude
+    zoom = min(np.log2(360 * width_px / 256 / lon_span), np.log2(360 * coslat * height_px / 256 / lat_span))
+    return ((box[0] + box[1]) / 2, (box[2] + box[3]) / 2), int(np.clip(np.floor(zoom), 2, 11))
+
+
 def density_map(dens, box):
     """Light basemap with one coloured square per cell and a rectangle-only draw tool."""
     esri = "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_{}/MapServer/tile/{{z}}/{{y}}/{{x}}"
-    fmap = folium.Map(tiles=None, control_scale=True)
+    fmap = folium.Map(location=list(map_view(box)[0]), zoom_start=map_view(box)[1], tiles=None,
+                      control_scale=True, prefer_canvas=True)
     folium.TileLayer(esri.format("Base"), attr="Esri, HERE, Garmin, © OpenStreetMap contributors",
                      name="Light basemap", control=False).add_to(fmap)
-    fmap.fit_bounds([[box[0], box[2]], [box[1], box[3]]])
     dens = dens[dens["n"] >= 1]
     if len(dens):
         top = np.log10(1 + dens["n"].max())
@@ -444,9 +452,10 @@ with tab1:
     st.caption(f"Fire activity per map square, {yr[0]}–{yr[1]}; brighter means more. **To check a smaller "
                "area, use the square tool on the left of the map and draw a rectangle.** Everything on this "
                "page then updates to that area. You can also type coordinates in the sidebar.")
-    out_map = st_folium(density_map(cell_density(prefer, yr[0], yr[1]), box), height=430,
+    out_map = st_folium(density_map(cell_density(prefer, yr[0], yr[1]), box), height=520,
                         use_container_width=True, returned_objects=["last_active_drawing"],
-                        key=f"map_{choice}")
+                        center=map_view(box)[0], zoom=map_view(box)[1],
+                        key=f"map_{choice}_{box}_{yr}")
     drawn = (out_map or {}).get("last_active_drawing")
     if drawn and drawn.get("geometry", {}).get("type") == "Polygon":
         pts = drawn["geometry"]["coordinates"][0]
