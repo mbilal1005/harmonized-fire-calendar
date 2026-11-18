@@ -213,4 +213,4 @@ FIRE_RAW_DIRS=data/raw_big FIRE_AGG_DIR=data/agg_wide FIRE_REGIONS=regions_wide.
 
 ## AI usage
 
- Details per step are in [AI_USAGE.md](AI_USAGE.md). Every number shown comes from the data.
+ Details per step are in [AI_USAGE.md](AI_USAGE.md). Every number shown comes from the data
